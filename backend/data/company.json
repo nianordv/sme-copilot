@@ -1,0 +1,13 @@
+{
+  "_note": "PLACEHOLDER NUMBERS, not agreed by the team. Finance: overwrite the amounts and days here, then re-run `python -m backend.bank.seed`. No other file hard-codes these numbers.",
+  "placeholder": true,
+  "company_name": "Demo Food & Drink Wholesale LLC",
+  "currency": "GEL",
+  "opening_balance": 260000.00,
+  "monthly_payments": [
+    {"category": "salaries", "label": "Salaries", "days_of_month": [10], "amount": 68000.00},
+    {"category": "taxes", "label": "Taxes", "days_of_month": [15], "amount": 54000.00},
+    {"category": "stock", "label": "Stock purchase", "days_of_month": [1, 8, 16, 24], "amount": 230000.00}
+  ],
+  "one_off_payments": []
+}

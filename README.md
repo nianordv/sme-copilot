@@ -60,3 +60,17 @@ python -m ml.prepare_data
 ```
 
 This writes 50,319 generated invoices to `ml/data/` and the prepared training files to `ml/artifacts/`. Git ignores both folders, so each of us generates them locally. Training with `python -m ml.train` also needs `lightgbm`, which is not in `ml/requirements.txt` yet.
+
+## Build the company's books
+
+The server reads the demo company's books from a SQLite database, `backend/data/rightsize.db`. Build it after generating the data, with the server's environment (`.venv`) active:
+
+```sh
+python -m backend.bank.seed
+```
+
+It copies the ledger columns of the invoice CSV into the database, gives each of the 500 customers a readable name, and adds the company's own money: the bank balance and the payments due in the next 60 days. Those amounts come from one file, `backend/data/company.json`. They are placeholders until the finance owners overwrite that file.
+
+Run the command again whenever the CSV or `company.json` changes. It rebuilds the books and leaves everything else in the database alone. Git ignores the database file.
+
+"Today" in the app is the last day of the books, 3 Oct 2026, not the day you run it. `backend.bank.db.today()` returns it.

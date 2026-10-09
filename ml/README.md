@@ -45,6 +45,74 @@ versions, snapshot, assumptions). Files are ignored by Git and regenerated
 locally. The same seed is reproducible with the same dependency versions.
 Changes to holidays can change later random draws and therefore invoice counts.
 
+## Outgoing invoices
+
+`generate_outgoing_invoices_ge.py` generates the other side of the ledger: the
+bills the company receives from its own suppliers and pays. It is modelled on
+`generate_invoices_ge.py` and shares its seed, date window, snapshot date and
+Georgian holiday calendar. Run it after the incoming generator:
+
+```sh
+python -m ml.generate_outgoing_invoices_ge
+```
+
+Output: `data/outgoing_invoices_georgia.csv` and
+`data/outgoing_invoices_metadata.json`, both ignored by Git. One row per bill,
+11 ledger columns: `invoice_id` (`BILL-000001`), `supplier_id`,
+`supplier_category`, `supplier_city`, `expense_type` (`stock` or `overhead`),
+`issue_date`, `due_date`, `paid_date`, `status`, `amount`, `payment_terms`.
+Statuses are `paid`, `open_not_due` and `open_overdue`; a payment planned for
+after the snapshot is not exported. There are no write-offs and no model
+feature columns.
+
+Purchases follow sales. The script reads the incoming CSV, and each category's
+bills add up to a fixed share of what the company invoiced, larger in the weeks
+when it sold more. Regenerate this file whenever the incoming CSV changes; the
+metadata records which incoming file it was sized against.
+
+| Kind | Categories | Share of sales |
+| --- | --- | ---: |
+| Stock | Beverages, meat and poultry, dry goods, dairy, produce, frozen foods, coffee and tea, packaging | 80.0% |
+| Overhead | Fuel and transport, rent, utilities, services | 4.7% |
+
+The remaining 15.3% is what is left for salaries, taxes and profit, none of
+which are invoices. These shares are design assumptions set in the `CAT` table
+at the top of the script, not measured figures.
+
+How the company pays, also assumptions:
+
+- It means to pay a couple of days before the due date.
+- Payments leave in batches on Tuesdays and Fridays, and never on a weekend or
+  public holiday.
+- A bill due from the 8th to the 15th waits about three days longer, because
+  the company's own salaries (10th) and taxes (15th) come first.
+- January bills wait about two days longer. Two in a hundred are disputed and
+  held back 10 to 40 days. An unusually large bill is paid later.
+- Rent and utilities go by direct debit and are never late.
+
+Two things differ on purpose from the incoming generator: bills are spread
+evenly over working days instead of piling up on Mondays, and each supplier
+keeps one payment term.
+
+Figures from the current run, against the 50,319-invoice incoming file:
+
+| | |
+| --- | ---: |
+| Bills | 15,274 |
+| Suppliers | 56 |
+| Total billed | GEL 48,210,132 |
+| Paid bills that were paid late | 47.7% |
+| Median days late | 0 |
+| Unpaid at the snapshot | 208 bills, GEL 828,925 |
+| Of which due within 30 days | GEL 623,255 |
+| Of which already overdue | 5 bills, GEL 14,982 |
+
+Limitations: payment timing does not react to the company's real bank balance,
+so the company never delays a bill because it is actually short. Bills not yet
+issued on the snapshot date are not in the file, so known bills cover less of
+the outflow the further ahead you look. Supplier names are not generated, only
+IDs.
+
 ## Model preparation
 
 Daily binary label: payment on this date, conditional on being unpaid before

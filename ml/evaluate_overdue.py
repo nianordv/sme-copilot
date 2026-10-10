@@ -31,7 +31,7 @@ ANCHORS = {
 }
 
 
-def predict_model(invoices, anchors, model, manifest):
+def predict_model_curves(invoices, anchors, model, manifest):
     """Predict payment after the anchor, conditional on still unpaid."""
 
     base = static_features(invoices, manifest["categories"])
@@ -41,10 +41,7 @@ def predict_model(invoices, anchors, model, manifest):
         raise ValueError("Model and prepared feature order differ.")
 
     days = np.arange(1, max(HORIZONS) + 1)
-    predictions = {
-        horizon: np.empty(len(invoices), dtype=float)
-        for horizon in HORIZONS
-    }
+    predictions = np.empty((len(invoices), len(days)), dtype=float)
 
     for start in range(0, len(invoices), BATCH_SIZE):
         stop = min(start + BATCH_SIZE, len(invoices))
@@ -105,15 +102,17 @@ def predict_model(invoices, anchors, model, manifest):
 
         cumulative = 1.0 - np.cumprod(1.0 - hazards, axis=1)
 
-        for horizon in HORIZONS:
-            predictions[horizon][start:stop] = (
-                cumulative[:, horizon - 1]
-            )
+        predictions[start:stop] = cumulative
 
     return predictions
 
 
-def predict_baseline(invoices, anchors, baseline):
+def predict_model(invoices, anchors, model, manifest):
+    curves = predict_model_curves(invoices, anchors, model, manifest)
+    return {horizon: curves[:, horizon - 1] for horizon in HORIZONS}
+
+
+def predict_baseline_curves(invoices, anchors, baseline):
     """Use baseline hazards at the invoice's age after the anchor."""
 
     term_lookup = {
@@ -140,6 +139,9 @@ def predict_baseline(invoices, anchors, baseline):
     anchor_age = (
         anchors - invoices.issue_date
     ).dt.days.to_numpy()
+
+    if invoices.empty:
+        return np.empty((0, max(HORIZONS)), dtype=float)
 
     ages = (
         anchor_age[:, None]
@@ -169,10 +171,12 @@ def predict_baseline(invoices, anchors, baseline):
 
     cumulative = 1.0 - np.cumprod(1.0 - hazards, axis=1)
 
-    return {
-        horizon: cumulative[:, horizon - 1]
-        for horizon in HORIZONS
-    }
+    return cumulative
+
+
+def predict_baseline(invoices, anchors, baseline):
+    curves = predict_baseline_curves(invoices, anchors, baseline)
+    return {horizon: curves[:, horizon - 1] for horizon in HORIZONS}
 
 
 def evaluate():

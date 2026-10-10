@@ -5,10 +5,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.llm import generate_reply, stream_reply
+from backend.actions.demo import register_demo_actions
 import json
 from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Rightsize API")
+register_demo_actions()
 
 
 class ChatMessage(BaseModel):

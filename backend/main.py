@@ -1,15 +1,15 @@
+import json
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.llm import generate_reply, stream_reply
 from backend.actions.demo import register_demo_actions
-import json
-from fastapi.responses import StreamingResponse
+from backend.agent import stream_agent
 
-app = FastAPI(title="Rightsize API")
+app = FastAPI(title="BillBoard API")
 register_demo_actions()
 
 
@@ -19,6 +19,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
     messages: list[ChatMessage] = Field(
         min_length=1, max_length=20
     )
@@ -46,7 +47,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
     ]
 
     try:
-        reply = await generate_reply(messages)
+        parts = []
+        async for event in stream_agent(messages, request.session_id):
+            if event["type"] == "chunk":
+                parts.append(event["content"])
+            elif event["type"] == "confirmation":
+                raise HTTPException(status_code=409, detail="Confirmation requires the streaming chat interface.")
+            elif event["type"] == "error":
+                raise ValueError(event["message"])
+        reply = "".join(parts)
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status_code=504,
@@ -85,13 +94,8 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
     async def events():
         try:
-            async for chunk in stream_reply(messages):
-                yield json.dumps({
-                    "type": "chunk",
-                    "content": chunk,
-                }) + "\n"
-
-            yield json.dumps({"type": "done"}) + "\n"
+            async for event in stream_agent(messages, request.session_id):
+                yield json.dumps(event, allow_nan=False) + "\n"
 
         except httpx.TimeoutException:
             yield json.dumps({

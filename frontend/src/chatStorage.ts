@@ -1,7 +1,15 @@
+export type ActionStep = {
+  name: string
+  status: string
+  label: string
+}
+
 export type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  actions?: ActionStep[]
+  confirmation?: { confirmationId: string; summary: string }
 }
 
 export type Chat = {
@@ -58,7 +66,7 @@ export function createChat(): Chat {
         id: 'welcome',
         role: 'assistant',
         content:
-          'Hello, I’m Rightsize, your business finance assistant. Financial data is not connected yet.',
+          'Hello, I’m Bill, your BillBoard cash assistant. I can demonstrate actions using clearly fictional data. Real financial data is not connected yet.',
       },
     ],
   }
@@ -74,6 +82,16 @@ function isMessage(value: unknown): value is Message {
     (value.role === 'user' || value.role === 'assistant') &&
     'content' in value &&
     typeof value.content === 'string'
+    && (!('actions' in value) || (Array.isArray(value.actions) && value.actions.every(
+      (step: unknown) => typeof step === 'object' && step !== null
+        && 'name' in step && typeof step.name === 'string'
+        && 'status' in step && typeof step.status === 'string'
+        && 'label' in step && typeof step.label === 'string',
+    )))
+    && (!('confirmation' in value) || (typeof value.confirmation === 'object'
+      && value.confirmation !== null
+      && 'confirmationId' in value.confirmation && typeof value.confirmation.confirmationId === 'string'
+      && 'summary' in value.confirmation && typeof value.confirmation.summary === 'string'))
   )
 }
 

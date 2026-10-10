@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, SetStateAction } from 'react'
+import ReactMarkdown from 'react-markdown'
 import {
   createChat,
   getStorageError,
@@ -105,13 +106,14 @@ function App() {
     setIsSending(true)
 
     let receivedText = false
+    let receivedAction = false
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
     try {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, session_id: activeChat.id }),
       })
 
       if (!response.ok) {
@@ -159,6 +161,28 @@ function App() {
                 : message,
             ),
           )
+        } else if (data.type === 'action') {
+          if (!('name' in data) || typeof data.name !== 'string'
+            || !('status' in data) || typeof data.status !== 'string'
+            || !('label' in data) || typeof data.label !== 'string') {
+            throw new Error('Invalid action event.')
+          }
+          receivedAction = true
+          const step = { name: data.name, status: data.status, label: data.label }
+          setMessages((previous) => previous.map((message) =>
+            message.id === assistantId
+              ? { ...message, actions: [...(message.actions ?? []), step] }
+              : message,
+          ))
+        } else if (data.type === 'confirmation') {
+          if (!('confirmation_id' in data) || typeof data.confirmation_id !== 'string'
+            || !('summary' in data) || typeof data.summary !== 'string') {
+            throw new Error('Invalid confirmation event.')
+          }
+          const confirmation = { confirmationId: data.confirmation_id, summary: data.summary }
+          setMessages((previous) => previous.map((message) =>
+            message.id === assistantId ? { ...message, confirmation } : message,
+          ))
         } else if (data.type === 'done') {
           completed = true
         } else if (data.type === 'error') {
@@ -205,6 +229,16 @@ function App() {
         throw new Error('The reply ended before completion.')
       }
     } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unable to send the message.'
+      if (receivedAction) {
+        // Keep execution evidence: a failed reply does not undo an action.
+        setMessages((previous) => previous.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: `${message.content}\nReply interrupted. Review the action steps before trying again.` }
+            : message,
+        ))
+        setError(detail)
+      } else {
       setMessages((previous) =>
         previous.filter(
           (message) =>
@@ -214,16 +248,12 @@ function App() {
       )
       setInput(content)
 
-      const detail =
-        error instanceof Error
-          ? error.message
-          : 'Unable to send the message.'
-
       setError(
         receivedText
           ? `${detail} The incomplete reply was removed; you can retry.`
           : detail,
       )
+      }
     } finally {
       if (reader) {
         try {
@@ -279,8 +309,8 @@ function App() {
     <main className="chat">
       <header className="chat-header">
         <div>
-          <h1>Rightsize</h1>
-          <p>Your business finance assistant</p>
+          <h1>BillBoard</h1>
+          <p>Bill, your business cash assistant</p>
         </div>
 
         <button
@@ -294,7 +324,7 @@ function App() {
       </header>
 
       <div className="connection-notice">
-        Local AI chat — financial data is not connected yet.
+        Demo actions use fictional data. Real financial data is not connected yet.
       </div>
 
       <section
@@ -310,14 +340,38 @@ function App() {
             className={`message message-${message.role}`}
           >
             <strong>
-              {message.role === 'user' ? 'You' : 'Rightsize'}
+              {message.role === 'user' ? 'You' : 'Bill'}
             </strong>
-            <p>{message.content}</p>
+            {message.actions && (
+              <ul className="action-steps" aria-label="Action steps">
+                {message.actions.map((step, index) => (
+                  <li key={`${step.name}-${index}`}>{step.label}</li>
+                ))}
+              </ul>
+            )}
+            <div className="message-content">
+              {message.role === 'assistant' ? (
+                <ReactMarkdown
+                  skipHtml
+                  components={{ img: ({ alt }) => <span>{alt}</span> }}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              ) : (
+                <p>{message.content}</p>
+              )}
+            </div>
+            {message.confirmation && (
+              <div className="confirmation-notice">
+                <p>{message.confirmation.summary}</p>
+                <p>Not executed. Approval controls are coming in the next phase.</p>
+              </div>
+            )}
           </article>
         ))}
       </section>
 
-      {isSending && <p role="status">Rightsize is replying…</p>}
+      {isSending && <p role="status">Bill is working…</p>}
       {error && <p role="alert">{error}</p>}
       {storageError && <p role="alert">{storageError}</p>}
 

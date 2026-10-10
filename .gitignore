@@ -27,3 +27,8 @@ dist/
 
 # Local logs
 *.log
+
+# Reproducible ML outputs (regenerate locally)
+ml/data/*.csv
+ml/data/dataset_metadata.json
+ml/artifacts/

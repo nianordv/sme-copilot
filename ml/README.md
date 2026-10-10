@@ -1,0 +1,92 @@
+# Payment forecasting
+
+For a plain-language explanation of generation, history, splits, checks, and
+limitations, read [How we generate and handle invoice data](../docs/data-generation-and-handling.md).
+
+All data here is synthetic: one simulated Georgian supplier, 500 customers,
+GEL amounts, and an end-of-day snapshot on 2026-10-03. Results cannot establish
+real-world forecasting accuracy or generalization to other suppliers.
+
+## Setup and commands
+
+From the repository root, create a separate ML environment:
+
+```sh
+python3 -m venv ml/.venv
+source ml/.venv/bin/activate
+python -m pip install -r ml/requirements.txt
+python -m ml.generate_invoices_ge
+python -m unittest discover -s ml/tests -v
+python -m ml.prepare_data
+```
+
+The generation/preparation dependencies are pinned in `requirements.txt`.
+LightGBM training dependencies will be added with the training stage; the
+current scripts do not require LightGBM or make any paid API requests.
+
+## Corrected generation
+
+Adapted from the team's `generate_invoices_ge.py`. The original behavior model
+is retained, with these corrections:
+
+- May 17 is a public holiday starting in 2024, not 2023.
+- The private never-payment draw is never exported. A write-off becomes
+  observable at due date + 90 days, an explicit synthetic policy. Before that
+  date it is simply an unpaid invoice. `writeoff_date` is blank until observed.
+- History uses payments strictly before issue date. Same-day payment ties use
+  invoice ID for a reproducible ordering.
+- Amount history and outstanding balances use strictly earlier issue dates.
+  Payments/write-offs strictly before issue date close prior invoices.
+- History retains full precision; money is generated to two decimal places.
+- Importing the generator does not run it. Every generation resets seed 2026.
+
+Output: `data/invoices_georgia.csv` and `data/dataset_metadata.json` (hashes,
+versions, snapshot, assumptions). Files are ignored by Git and regenerated
+locally. The same seed is reproducible with the same dependency versions.
+Changes to holidays can change later random draws and therefore invoice counts.
+
+## Model preparation
+
+Daily binary label: payment on this date, conditional on being unpaid before
+this date. Rows start the day after issue and end at the earliest of observed
+payment, observation cutoff, or due date + 365 days. An unpaid invoice is
+right-censored; it is not assigned an invented payment date or a permanent
+default label. Written-off invoices remain payment non-events in this synthetic
+full-settlement simulation, with the same finite observation limit.
+
+| Partition | Invoice issue dates | Observe payments through |
+| --- | --- | --- |
+| Train | 2022–2024 | 2024-12-31 |
+| Validation: tuning | January–September 2025 | 2025-09-30 |
+| Validation: calibration | October–December 2025 | 2025-12-31 |
+| Test | January–September 2026 | 2026-10-03 |
+
+`prepare_data.py` rebuilds history, learns category vocabularies only from
+training invoices, and saves `artifacts/prepared/*.npz`. Each contains `X`, `y`,
+invoice row references, candidate dates, and invoice IDs for evaluation joins.
+`manifest.json` records membership, cutoffs, the source hash, and feature order.
+Matching invoice CSVs contain evaluation outcomes; those fields never enter X.
+
+Predictors: invoice amount/terms/issue month, segment/city, prior client payment
+history and outstanding exposure, due-date calendar, current invoice age and
+days past due, and candidate-date calendar. IDs, final status, observed payment
+calendar, write-off date, and outcome targets are excluded from X. There is no
+class balancing or negative-row sampling, preserving probability estimation.
+
+The model is not trained yet. `model_config.json` defines the initial CPU
+LightGBM settings. The next stage adds a censor-aware empirical baseline,
+LightGBM fitting and tuning, calibration, and an untouched test evaluation.
+Early stopping: up to 500 trees, patience 30 on tuning-set binary log loss.
+Candidate leaves {8,16} and minimum leaf samples {100,200,400}; compare to the
+baseline using invoice-level 7/14/30/60-day Brier scores. Calibration uses only
+October–December 2025. Test results must not drive model selection.
+
+Future probabilities are obtained by chaining hazards:
+`P(paid within H days) = 1 - product(1 - daily_hazard)`.
+Only evaluate horizons with full follow-up, even for invoices paid early.
+Receipt evaluation must include the same outstanding invoice cohort in both
+prediction and actual receipts. Future invoices are excluded.
+
+Limitations: full payments only, assumed payroll dates, no common economic
+shocks, no empirically calibrated Georgian customer behavior. Cash-gap
+validation additionally requires balances and dated outflows, absent here.

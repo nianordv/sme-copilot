@@ -119,6 +119,7 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(result["demo"])
         self.assertEqual(result["total_overdue"], sum(i["amount"] for i in result["invoices"]))
         pending = registry.execute("send_reminder", {"customer": "Demo Cafe", "text": "Hello"}, "owner")
+        self.assertEqual(pending["summary"], "Send this reminder to Demo Cafe?\n\nHello")
         result = registry.confirm(pending["confirmation_id"], True, "owner")["result"]
         self.assertFalse(result["sent_externally"])
         self.assertEqual({a["name"] for a in registry.list_actions()}, {"get_receivables", "send_reminder"})

@@ -9,7 +9,7 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   actions?: ActionStep[]
-  confirmation?: { confirmationId: string; summary: string }
+  confirmation?: { confirmationId: string; summary: string; outcome?: string }
 }
 
 export type Chat = {
@@ -91,7 +91,8 @@ function isMessage(value: unknown): value is Message {
     && (!('confirmation' in value) || (typeof value.confirmation === 'object'
       && value.confirmation !== null
       && 'confirmationId' in value.confirmation && typeof value.confirmation.confirmationId === 'string'
-      && 'summary' in value.confirmation && typeof value.confirmation.summary === 'string'))
+      && 'summary' in value.confirmation && typeof value.confirmation.summary === 'string'
+      && (!('outcome' in value.confirmation) || typeof value.confirmation.outcome === 'string')))
   )
 }
 

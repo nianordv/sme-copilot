@@ -111,9 +111,16 @@ def execute(name, arguments, session_id) -> dict:
     confirmation_id = str(uuid4())
     with _lock:
         _pending[confirmation_id] = PendingCall(action, stored_arguments, session_id)
+    if action.name == "send_reminder":
+        summary = (
+            f"Send this reminder to {stored_arguments['customer']}?\n\n"
+            f"{stored_arguments['text']}"
+        )
+    else:
+        summary = (f"Approve {action.name.replace('_', ' ')}?\n\n"
+                   + json.dumps(stored_arguments, ensure_ascii=False, allow_nan=False))
     return {"status": "needs_confirmation", "confirmation_id": confirmation_id,
-            "summary": f"Approve {action.name} with these arguments: "
-                       + json.dumps(stored_arguments, ensure_ascii=False, allow_nan=False)}
+            "summary": summary}
 
 
 def confirm(confirmation_id, approved, session_id) -> dict:

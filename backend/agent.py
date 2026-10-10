@@ -91,7 +91,7 @@ async def stream_agent(messages, session_id):
             if status == "needs_confirmation":
                 yield {"type": "confirmation", "confirmation_id": result["confirmation_id"],
                        "summary": result["summary"]}
-                yield {"type": "chunk", "content": "This action is waiting for owner confirmation; it has not run. Approval buttons will be added in the next phase."}
+                yield {"type": "chunk", "content": "This action has not run. Choose Yes to approve it or No to decline."}
                 yield {"type": "done"}
                 return
 

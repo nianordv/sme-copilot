@@ -4,9 +4,10 @@ from typing import Literal
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from backend.actions.demo import register_demo_actions
+from backend.actions import registry
 from backend.agent import stream_agent
 
 app = FastAPI(title="BillBoard API")
@@ -27,6 +28,20 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class ConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_id: str = Field(min_length=1, max_length=100)
+    approved: StrictBool
+    session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@app.post("/confirm")
+def confirm_action(request: ConfirmationRequest) -> dict:
+    # Approval comes through the UI endpoint, never through the model's tools.
+    return registry.confirm(request.confirmation_id, request.approved, request.session_id)
 
 
 @app.get("/health")

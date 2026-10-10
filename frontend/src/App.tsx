@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, SetStateAction } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -15,6 +15,9 @@ function App() {
   const [chatStore, setChatStore] = useState(loadChatStore)
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
+  const [isConfirming, setIsConfirming] = useState(false)
+  const submittedConfirmations = useRef(new Set<string>())
+  const isBusy = isSending || isConfirming
   const [error, setError] = useState<string | null>(null)
   const storageError = useSyncExternalStore(
     subscribeToStorage,
@@ -60,7 +63,7 @@ function App() {
   }, [chatStore, isSending])
 
   function startNewChat() {
-    if (isSending) return
+    if (isBusy) return
 
     const chat = createChat()
 
@@ -77,7 +80,7 @@ function App() {
     event.preventDefault()
 
     const content = input.trim()
-    if (!content || isSending) return
+    if (!content || isBusy) return
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -90,7 +93,12 @@ function App() {
 
     const history = conversation
       .filter((message) => message.id !== 'welcome')
-      .map(({ role, content }) => ({ role, content }))
+      .map(({ role, content, confirmation }) => ({
+        role,
+        content: confirmation?.outcome
+          ? `${content}\nApproval result: ${confirmation.outcome}`
+          : content,
+      }))
 
     if (history.length > 20) {
       setError('This demo supports 20 messages. Click New chat to start again.')
@@ -269,7 +277,7 @@ function App() {
   }
 
   function selectChat(chatId: string) {
-    if (isSending) return
+    if (isBusy) return
 
     setChatStore((previous) => ({
       ...previous,
@@ -278,6 +286,57 @@ function App() {
 
     setInput('')
     setError(null)
+  }
+
+  async function handleConfirmation(message: Message, approved: boolean) {
+    const confirmation = message.confirmation
+    if (!confirmation || confirmation.outcome || isBusy
+      || submittedConfirmations.current.has(confirmation.confirmationId)) return
+
+    // Claim immediately: two clicks before React renders still send once.
+    submittedConfirmations.current.add(confirmation.confirmationId)
+    setIsConfirming(true)
+    setError(null)
+    let outcome = 'Approval response was lost. The action may have run; do not retry it automatically.'
+    let status = 'unknown'
+
+    try {
+      const response = await fetch('/api/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmation_id: confirmation.confirmationId,
+          approved,
+          session_id: activeChat.id,
+        }),
+      })
+      if (!response.ok) throw new Error(`Approval request failed (${response.status}).`)
+      const data = await response.json()
+      if (data.status === 'ok' && data.result && typeof data.result === 'object') {
+        status = 'ok'
+        outcome = data.result.simulated === true
+          ? 'Reminder simulated; nothing was sent externally.'
+          : 'Approved action completed.'
+      } else if (data.status === 'refused' && typeof data.reason === 'string') {
+        status = 'refused'
+        outcome = data.reason
+      } else if (data.status === 'error' && typeof data.message === 'string') {
+        status = 'error'
+        outcome = `${data.message} If this request is unavailable, it may have been used or the server restarted.`
+      } else {
+        throw new Error('Invalid approval response.')
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to confirm the action.')
+    } finally {
+      const finalOutcome = outcome
+      const finalStatus = status
+      setMessages((previous) => previous.map((item) => item.id === message.id
+        ? { ...item, confirmation: { ...confirmation, outcome: finalOutcome },
+          actions: [...(item.actions ?? []), { name: 'confirmation', status: finalStatus, label: finalOutcome }] }
+        : item))
+      setIsConfirming(false)
+    }
   }
 
   return (
@@ -297,7 +356,7 @@ function App() {
               chat.id === chatStore.activeChatId ? 'true' : undefined
             }
             onClick={() => selectChat(chat.id)}
-            disabled={isSending}
+            disabled={isBusy}
             title={chat.title}
           >
             {chat.title}
@@ -308,16 +367,19 @@ function App() {
 
     <main className="chat">
       <header className="chat-header">
-        <div>
-          <h1>BillBoard</h1>
-          <p>Bill, your business cash assistant</p>
+        <div className="brand">
+          <img className="brand-logo" src="/billboard-logo.png" alt="" width="48" height="48" />
+          <div>
+            <h1>BillBoard</h1>
+            <p>Bill, your business cash assistant</p>
+          </div>
         </div>
 
         <button
           type="button"
           className="new-chat-button"
           onClick={startNewChat}
-          disabled={isSending}
+          disabled={isBusy}
         >
           New chat
         </button>
@@ -364,7 +426,16 @@ function App() {
             {message.confirmation && (
               <div className="confirmation-notice">
                 <p>{message.confirmation.summary}</p>
-                <p>Not executed. Approval controls are coming in the next phase.</p>
+                {message.confirmation.outcome ? (
+                  <p>{message.confirmation.outcome}</p>
+                ) : (
+                  <div className="confirmation-buttons">
+                    <button type="button" disabled={isBusy}
+                      onClick={() => handleConfirmation(message, true)}>Yes</button>
+                    <button type="button" disabled={isBusy}
+                      onClick={() => handleConfirmation(message, false)}>No</button>
+                  </div>
+                )}
               </div>
             )}
           </article>
@@ -372,6 +443,7 @@ function App() {
       </section>
 
       {isSending && <p role="status">Bill is working…</p>}
+      {isConfirming && <p role="status">Recording your decision…</p>}
       {error && <p role="alert">{error}</p>}
       {storageError && <p role="alert">{storageError}</p>}
 
@@ -386,12 +458,12 @@ function App() {
             placeholder="Type a message…"
             maxLength={4000}
             autoComplete="off"
-            disabled={isSending}
+            disabled={isBusy}
           />
 
           <button
             type="submit"
-            disabled={isSending || !input.trim()}
+            disabled={isBusy || !input.trim()}
           >
             {isSending ? 'Waiting…' : 'Send'}
           </button>

@@ -43,6 +43,20 @@
   letter-spacing: -0.8px;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand-logo {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+}
+
 .chat-header p {
   margin: 6px 0 0;
   color: var(--text-secondary);
@@ -62,6 +76,7 @@
 }
 
 .messages {
+  background: var(--canvas);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -385,4 +400,34 @@
   .chat-list {
     max-height: 160px;
   }
+}
+
+.confirmation-buttons {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.confirmation-notice p {
+  white-space: pre-wrap;
+}
+
+.confirmation-buttons button {
+  padding: 0.5rem 1rem;
+  border: 1px solid #2563eb;
+  border-radius: 0.5rem;
+  background: #fff;
+  color: #163b5c;
+  font: inherit;
+  cursor: pointer;
+}
+
+.confirmation-buttons button:first-child {
+  background: #2563eb;
+  color: #fff;
+}
+
+.confirmation-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

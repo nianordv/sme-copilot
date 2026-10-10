@@ -27,7 +27,9 @@ CLIENT_SHRINKAGE = 5.0
 MIN_CLIENT_PAYMENTS = 3
 
 
-def fit_baseline():
+def fit_baseline(prepared=PREPARED, output=OUTPUT):
+    PREPARED = Path(prepared)
+    OUTPUT = Path(output)
     manifest_path = PREPARED / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
 

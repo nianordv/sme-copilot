@@ -167,8 +167,8 @@ def build_history_features(inv):
 
 
 
-def generate(output_dir=OUT_DIR):
-    rng = np.random.default_rng(SEED)
+def generate(output_dir=OUT_DIR, seed=SEED):
+    rng = np.random.default_rng(seed)
     OUT_DIR = Path(output_dir)
     total_days = (END - START).days
     clients = []
@@ -331,7 +331,7 @@ def generate(output_dir=OUT_DIR):
           "| median days_late:", paid_rows.days_late.astype(float).median())
 
     metadata = {
-        "generator_version": 2, "seed": SEED, "snapshot_date": str(TODAY.date()),
+        "generator_version": 2, "seed": seed, "snapshot_date": str(TODAY.date()),
         "snapshot_semantics": "end_of_day", "currency": "GEL", "synthetic": True,
         "writeoff_after_due_days": WRITEOFF_AFTER_DAYS,
         "rows": len(out), "clients": int(out.client_id.nunique()),

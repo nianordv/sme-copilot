@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Local secrets (keep example files trackable)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local editor settings
+.idea/
+.vscode/
+
+# JavaScript dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local logs
+*.log

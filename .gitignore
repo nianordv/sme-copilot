@@ -32,3 +32,6 @@ dist/
 ml/data/*.csv
 ml/data/dataset_metadata.json
 ml/artifacts/
+
+# The demo company's books (rebuild with python -m backend.bank.seed)
+backend/data/*.db

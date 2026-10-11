@@ -7,18 +7,18 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from backend.actions.demo import register_demo_actions
 from backend.actions.lookups import register_lookup_actions
 from backend.actions.owner_only import register_owner_only_actions
+from backend.actions.reminders import register_reminder_actions
 from backend.actions import registry
 from backend.agent import stream_agent
 
 app = FastAPI(title="BillBoard API")
 # Answer only under a local name, so a website cannot reach the API under its own (DNS rebinding).
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
-register_demo_actions()
 register_lookup_actions()
 register_owner_only_actions()
+register_reminder_actions()
 
 
 class ChatMessage(BaseModel):

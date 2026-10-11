@@ -7,11 +7,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from backend.actions.demo import register_demo_actions
+from backend.actions.lookups import register_lookup_actions
 from backend.actions import registry
 from backend.agent import stream_agent
 
 app = FastAPI(title="BillBoard API")
 register_demo_actions()
+register_lookup_actions()
 
 
 class ChatMessage(BaseModel):

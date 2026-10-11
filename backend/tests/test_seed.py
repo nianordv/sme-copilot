@@ -1,7 +1,4 @@
 import csv
-import hashlib
-import json
-import os
 import sqlite3
 import tempfile
 import unittest
@@ -10,32 +7,16 @@ from pathlib import Path
 
 from backend.bank import db
 from backend.bank.seed import (
-    DEFAULT_CSV, DEFAULT_METADATA, LEDGER_COLUMNS, display_names,
-    scheduled_payments, seed,
+    DEFAULT_CSV, DEFAULT_METADATA, display_names, scheduled_payments, seed,
 )
+from backend.tests.helpers import COMPANY, SNAPSHOT, BooksTestCase
 
-SNAPSHOT = "2026-10-03"
-# The ledger columns plus two of the model's columns, which must not be copied.
-HEADER = [*LEDGER_COLUMNS, "paid_weekday", "days_late"]
 ROWS = [
     ["INV-1", "CL0001", "Cafe", "Tbilisi", "2026-08-01", "2026-08-31", "2026-09-02", "", "paid", "100.10", "30", "2", "2"],
     ["INV-2", "CL0001", "Cafe", "Tbilisi", "2026-09-01", "2026-09-16", "", "", "open_overdue", "200.20", "15", "", ""],
     ["INV-3", "CL0002", "Hotel", "Batumi", "2026-09-20", "2026-10-20", "", "", "open_not_due", "300.30", "30", "", ""],
     ["INV-4", "CL0002", "Hotel", "Batumi", "2026-03-01", "2026-03-31", "", "2026-06-29", "written_off", "400.40", "30", "", ""],
 ]
-COMPANY = {
-    "placeholder": True,
-    "company_name": "Test Wholesale",
-    "currency": "GEL",
-    "opening_balance": 1000.0,
-    "monthly_payments": [
-        {"category": "salaries", "label": "Salaries", "days_of_month": [10], "amount": 50.0},
-        {"category": "taxes", "label": "Taxes", "days_of_month": [15], "amount": 30.0},
-    ],
-    "one_off_payments": [
-        {"category": "other", "label": "New van", "date": "2026-10-20", "amount": 70.0},
-    ],
-}
 
 
 def owed_straight_from_csv(csv_path):
@@ -52,43 +33,9 @@ def csv_row_count(csv_path):
         return sum(1 for _ in csv.DictReader(handle))
 
 
-class SeedTests(unittest.TestCase):
-    def setUp(self):
-        self.folder = Path(tempfile.mkdtemp())
-        self.csv = self.folder / "invoices.csv"
-        self.metadata = self.folder / "metadata.json"
-        self.company = self.folder / "company.json"
-        self.database = self.folder / "books.db"
-        self.company.write_text(json.dumps(COMPANY))
-        self.write_books(ROWS)
-        self.previous = os.environ.get("RIGHTSIZE_DB")
-        os.environ["RIGHTSIZE_DB"] = str(self.database)
-
-    def tearDown(self):
-        if self.previous is None:
-            del os.environ["RIGHTSIZE_DB"]
-        else:
-            os.environ["RIGHTSIZE_DB"] = self.previous
-
-    def write_books(self, rows):
-        with self.csv.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(HEADER)
-            writer.writerows(rows)
-        digest = hashlib.sha256(self.csv.read_bytes()).hexdigest()
-        self.metadata.write_text(json.dumps({
-            "snapshot_date": SNAPSHOT, "currency": "GEL", "csv_sha256": digest,
-        }))
-
-    def run_seed(self):
-        return seed(self.csv, self.metadata, self.company)
-
-    def query(self, sql):
-        conn = sqlite3.connect(self.database)
-        try:
-            return conn.execute(sql).fetchall()
-        finally:
-            conn.close()
+class SeedTests(BooksTestCase):
+    rows = ROWS
+    seed_on_setup = False  # Each test decides when the seed runs.
 
     def test_row_counts_and_owed_match_the_csv(self):
         result = self.run_seed()

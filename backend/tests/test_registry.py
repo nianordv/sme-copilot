@@ -117,7 +117,7 @@ class RegistryTests(unittest.TestCase):
     def test_demo_is_explicitly_fake_and_never_sends(self):
         register_demo_actions()
         pending = registry.execute("send_reminder", {"customer": "Demo Cafe", "text": "Hello"}, "owner")
-        self.assertEqual(pending["summary"], "Send this reminder to Demo Cafe?\n\nHello")
+        self.assertEqual(pending["summary"], 'Send this reminder to "Demo Cafe"?\n\n> Hello')
         result = registry.confirm(pending["confirmation_id"], True, "owner")["result"]
         self.assertFalse(result["sent_externally"])
         self.assertEqual({a["name"] for a in registry.list_actions()}, {"send_reminder"})

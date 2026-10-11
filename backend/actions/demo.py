@@ -1,6 +1,6 @@
 """Explicitly fictional actions for Phase 0; no database or external sends."""
 
-from .registry import Action, register
+from .registry import Action, one_line, quoted, register
 
 
 def send_reminder(customer, text):
@@ -10,7 +10,8 @@ def send_reminder(customer, text):
 
 
 def reminder_summary(customer, text):
-    return f"Send this reminder to {customer}?\n\n{text}"
+    # Both values come from the model, so neither is pasted in as it stands.
+    return f"Send this reminder to {one_line(customer)}?\n\n{quoted(text)}"
 
 
 def register_demo_actions():

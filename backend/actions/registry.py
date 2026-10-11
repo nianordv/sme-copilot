@@ -20,6 +20,15 @@ Only trusted server code may call confirm() and unlock(). No action exposes
 them and both refuse to run from inside an action, so text produced by the
 model cannot approve anything.
 
+Text from the model is data, never layout. A summarize function puts a short
+value through one_line() (in quotation marks, on one line) and a longer one
+through quoted() ("> " before every line), so neither can pass for words of
+ours. In every sentence the owner is shown and in every text column of a log
+row, a character that cannot be seen or that moves other text is written as
+its escape (\\n, \\u202e); logged arguments still read back as the same
+characters. A reply repeats an argument name the model made up only when it
+looks like a name.
+
 Log: every call and every confirmation adds one row to the audit_log table:
 time, session, action, arguments, level, decision and a short result. Decisions
 are ran, waiting, approved, declined, refused, expired, error and unlocked.
@@ -61,6 +70,7 @@ import sqlite3
 from threading import RLock
 import traceback
 from typing import Any, Callable, Literal
+import unicodedata
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
@@ -88,6 +98,13 @@ RESULT_LIMIT = 300       # the short result, as logged
 INVALID_SESSION = "(invalid)"
 LOGGED_COLUMNS = ("time", "session_id", "action", "arguments", "level", "decision",
                   "result", "confirmation_id")
+
+# Unicode categories of what cannot be seen or moves other text: controls
+# (line breaks among them), direction overrides, zero-width marks, line
+# separators, and code points that have no character.
+UNSEEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# An argument name the model made up is repeated in a reply only if it looks like one.
+NAME_LIKE = re.compile(r"[A-Za-z0-9_]{1,40}")
 
 OWNER_ONLY = "The assistant is not allowed to do this. Only the owner can, in the bank app."
 LOCKED = (f"This session is locked after {LOCK_AFTER_REFUSALS} refused requests. "
@@ -143,7 +160,8 @@ class Action:
     handler: Callable[..., dict]
     # Yellow only, optional: turns the arguments into the sentence the owner
     # approves. It must show everything that will happen, because the owner
-    # reads this sentence and not the arguments.
+    # reads this sentence and not the arguments. The model wrote the values,
+    # so each goes in through one_line() or quoted().
     summarize: Callable[..., str] | None = None
 
 
@@ -250,6 +268,21 @@ def verify_log() -> dict:
     return {"intact": True, "rows": len(rows), "last_fingerprint": previous or None}
 
 
+def one_line(value) -> str:
+    """For a summarize function: a short value from the model, such as a name,
+    in quotation marks on one line. A line break in it is written as \\n and a
+    quotation mark as \\", so it can neither start a line nor end the quotation."""
+    return _escaped(json.dumps(_text(value), ensure_ascii=False))
+
+
+def quoted(value) -> str:
+    """For a summarize function: a longer text from the model, such as a
+    message, with "> " before every line, so that no line of it can pass for
+    words of ours."""
+    lines = _text(value).splitlines() or [""]
+    return "\n".join(f"> {_escaped(line)}".rstrip() for line in lines)
+
+
 # --------------------------------------------------------------------- the rules
 def _execute(conn, name, arguments, session_id) -> dict:
     with _lock:
@@ -289,7 +322,8 @@ def _execute(conn, name, arguments, session_id) -> dict:
 def _ask(conn, action, arguments, session_id) -> dict:
     """Store a yellow call beside its "waiting" row. Nothing runs here."""
     try:
-        summary = _text(_summary(action, arguments))
+        # Whatever the sentence was built from, nothing in it is hidden from the owner.
+        summary = _escaped(_text(_summary(action, arguments)), keep="\n")
     except Exception as problem:
         _report(action.name, problem)
         with _transaction(conn):
@@ -496,17 +530,18 @@ def _transaction(conn) -> Iterator[None]:
 def _log(conn, session_id, action, arguments, level, decision, result,
          confirmation_id=None) -> None:
     """Add one row. Call it inside _transaction, which also keeps the chain of
-    fingerprints in order. Every field is cut to a fixed size here, the one
-    place rows are written."""
+    fingerprints in order. Here, the one place rows are written, every field
+    is cut to a fixed size and put on one line of visible characters, so that
+    printed out, no row can look like two."""
     fields = [
         _now().isoformat(timespec="seconds"),
         session_id,
-        _shorten(_text(action), NAME_LIMIT),
+        _shorten(_escaped(_text(action)), NAME_LIMIT),
         _arguments_for_log(arguments),
         level,
         decision,
-        _shorten(_text(result), RESULT_LIMIT),
-        _shorten(_text(confirmation_id), NAME_LIMIT) if confirmation_id else None,
+        _shorten(_escaped(_text(result)), RESULT_LIMIT),
+        _shorten(_escaped(_text(confirmation_id)), NAME_LIMIT) if confirmation_id else None,
     ]
     last = conn.execute("SELECT row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1").fetchone()
     conn.execute(
@@ -522,16 +557,18 @@ def _fingerprint(previous, fields) -> str:
 
 
 def _arguments_for_log(arguments) -> str:
-    """The arguments as JSON, whatever they are. Checked arguments always fit.
-    Anything larger was never accepted, so its size, its SHA-256 and its start
-    are kept. Anything that cannot be written out at all is recorded as such."""
+    """The arguments as JSON on one line of visible characters, whatever they
+    are. Checked arguments always fit. Anything larger was never accepted, so
+    its size, the SHA-256 of its JSON and its start are kept. Anything that
+    cannot be written out at all is recorded as such."""
     try:
         if not isinstance(arguments, dict):
             arguments = {"not_an_object": _text(arguments)[:RESULT_LIMIT]}
-        text = _json(arguments)
+        exact = _json(arguments)
+        text = _escaped(exact)
         if len(text) > ARGUMENTS_LIMIT:
             text = _json({"too_long": len(text),
-                          "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                          "sha256": hashlib.sha256(exact.encode()).hexdigest(),
                           "starts": text[:RESULT_LIMIT]})
         return text
     except Exception as problem:
@@ -553,6 +590,17 @@ def _text(value) -> str:
         return str(value).encode("utf-8", "backslashreplace").decode("utf-8")
     except Exception as problem:
         return f"({type(problem).__name__})"
+
+
+def _escaped(text, keep="") -> str:
+    """The text with every character that cannot be seen, or that moves other
+    text, written as its JSON escape: a line break as \\n, a direction override
+    as \\u202e. Letters of any script stay as written. JSON treated this way
+    reads back as the same characters."""
+    return "".join(
+        char if char in keep or unicodedata.category(char) not in UNSEEN
+        else json.dumps(char)[1:-1]
+        for char in text)
 
 
 def _shorten(text, limit) -> str:
@@ -635,13 +683,27 @@ def _check_arguments(action, arguments) -> dict:
         text.encode("utf-8")  # Half of a character pair cannot be stored.
     except ValidationError as invalid:
         problems = "; ".join(
-            f"{'.'.join(str(part) for part in error['loc']) or 'arguments'}: {error['msg']}"
+            f"{_argument_name(action, error['loc'])}: {error['msg']}"
             for error in invalid.errors()[:3])
         message = f"Invalid action arguments: {_text(problems)}"
         raise ValueError(_shorten(message, RESULT_LIMIT)) from None
     except Exception:
         # Whatever went wrong, the call is turned down and still gets its log row.
         raise ValueError("Invalid action arguments.") from None
-    if len(text) > ARGUMENTS_LIMIT:
+    # Measured as the log writes them, so whatever is accepted fits there in full.
+    if len(_escaped(text)) > ARGUMENTS_LIMIT:
         raise ValueError("Invalid action arguments: too long.")
     return checked
+
+
+def _argument_name(action, where) -> str:
+    """How a reply names the argument at fault. The screen shows replies as
+    steps, in our voice, so a name the action does not declare is repeated
+    only when it looks like a name and never when it reads as a sentence."""
+    if not where:
+        return "arguments"
+    name = str(where[0])
+    declared = action.parameters.get("properties")
+    if (isinstance(declared, dict) and name in declared) or NAME_LIKE.fullmatch(name):
+        return name
+    return "an unexpected argument"

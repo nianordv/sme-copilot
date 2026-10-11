@@ -97,4 +97,4 @@ python -c "from backend.actions.registry import verify_log; print(verify_log())"
 
 Text from the AI model is treated as data, never as layout. On the approval card a name appears on one line in quotation marks, and a message has `>` in front of every line, so neither can pass for the app's own words. A character that is invisible or reorders text is written out as a visible code, on the card and in the log. When you add a Yellow action, build its sentence with `registry.one_line()` for short values and `registry.quoted()` for longer text. Text the app takes from its own database needs neither.
 
-The card is still plain text. A model that has been tricked can pad its message with spaces so that part of it wraps onto a line without a `>`. Drawing the model's text in its own box on the screen would close that.
+On the card, look-alike quotation marks in a name and more than three blanks in a row are written out as codes too. All of this is a best effort: no list of misleading characters is complete, and the card is still plain text. The sound fix is on the screen: draw the model's text in its own box, so that nothing inside it can pass for the app's words.

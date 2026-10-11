@@ -26,7 +26,10 @@ through quoted() ("> " before every line), so neither can pass for words of
 ours. In every sentence the owner is shown and in every text column of a log
 row, a character that cannot be seen or that moves other text is written as
 its escape (\\n, \\u202e); logged arguments still read back as the same
-characters. A reply repeats an argument name the model made up only when it
+characters. On a card, look-alike quotation marks in a name and long runs of
+blanks are written out as well. This is a best effort: the list of characters
+that mislead cannot be complete, and only the screen can box the model's text.
+A reply repeats an argument name the model made up only when it
 looks like a name.
 
 Log: every call and every confirmation adds one row to the audit_log table:
@@ -103,6 +106,19 @@ LOGGED_COLUMNS = ("time", "session_id", "action", "arguments", "level", "decisio
 # (line breaks among them), direction overrides, zero-width marks, line
 # separators, and code points that have no character.
 UNSEEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# Characters that draw nothing although Unicode files them as letters, marks or
+# symbols: a joiner, Khmer and Mongolian marks, Hangul fillers, the blank
+# braille cell. A list like this is a best effort and cannot be complete.
+BLANK = frozenset(map(chr, (
+    0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180F,
+    0x2800, 0x3164, 0xFFA0)))
+# Marks that could pass for the quotation mark that closes a name.
+QUOTE_LIKE = frozenset(map(chr, (
+    0x02BA, 0x02DD, 0x02EE, 0x201C, 0x201D, 0x201E, 0x201F, 0x2033, 0x2036,
+    0x275D, 0x275E, 0x2E42, 0x3003, 0x301D, 0x301E, 0x301F, 0xFF02)))
+# Shown to the owner, blanks beyond this many in a row are written out: a long
+# run pushes the words after it onto a line of their own.
+BLANKS_IN_A_ROW = 3
 # An argument name the model made up is repeated in a reply only if it looks like one.
 NAME_LIKE = re.compile(r"[A-Za-z0-9_]{1,40}")
 
@@ -271,8 +287,10 @@ def verify_log() -> dict:
 def one_line(value) -> str:
     """For a summarize function: a short value from the model, such as a name,
     in quotation marks on one line. A line break in it is written as \\n and a
-    quotation mark as \\", so it can neither start a line nor end the quotation."""
-    return _escaped(json.dumps(_text(value), ensure_ascii=False))
+    quotation mark as \\", so it can neither start a line nor end the quotation.
+    Curly and other look-alike quotation marks are written as codes."""
+    text = json.dumps(_text(value), ensure_ascii=False)
+    return _shown("".join(_code(char) if char in QUOTE_LIKE else char for char in text))
 
 
 def quoted(value) -> str:
@@ -280,7 +298,7 @@ def quoted(value) -> str:
     message, with "> " before every line, so that no line of it can pass for
     words of ours."""
     lines = _text(value).splitlines() or [""]
-    return "\n".join(f"> {_escaped(line)}".rstrip() for line in lines)
+    return "\n".join(f"> {_shown(line)}".rstrip() for line in lines)
 
 
 # --------------------------------------------------------------------- the rules
@@ -323,7 +341,7 @@ def _ask(conn, action, arguments, session_id) -> dict:
     """Store a yellow call beside its "waiting" row. Nothing runs here."""
     try:
         # Whatever the sentence was built from, nothing in it is hidden from the owner.
-        summary = _escaped(_text(_summary(action, arguments)), keep="\n")
+        summary = _shown(_text(_summary(action, arguments)), keep="\n")
     except Exception as problem:
         _report(action.name, problem)
         with _transaction(conn):
@@ -598,9 +616,24 @@ def _escaped(text, keep="") -> str:
     as \\u202e. Letters of any script stay as written. JSON treated this way
     reads back as the same characters."""
     return "".join(
-        char if char in keep or unicodedata.category(char) not in UNSEEN
-        else json.dumps(char)[1:-1]
+        char if char in keep or (unicodedata.category(char) not in UNSEEN and char not in BLANK)
+        else _code(char)
         for char in text)
+
+
+def _shown(text, keep="") -> str:
+    """Text as the owner is shown it: escaped, and with any blank after the
+    first few in a row written as a code. What an action receives and what
+    the log keeps are not changed by this."""
+    shown, run = [], 0
+    for char in _escaped(text, keep):
+        run = run + 1 if unicodedata.category(char) == "Zs" else 0
+        shown.append(char if run <= BLANKS_IN_A_ROW else f"{chr(92)}u{ord(char):04x}")
+    return "".join(shown)
+
+
+def _code(char) -> str:
+    return json.dumps(char)[1:-1]
 
 
 def _shorten(text, limit) -> str:

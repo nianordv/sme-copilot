@@ -853,6 +853,49 @@ class ModelTextIsDataTests(PermissionTestCase):
         self.assertEqual(self.reminder("ქვევრი", "გამარჯობა"),
                          'Send this reminder to "ქვევრი"?\n\n> გამარჯობა')
 
+    def test_characters_that_draw_nothing_are_written_out_too(self):
+        # Unicode files these as letters, marks or symbols, but they show as nothing:
+        # a joiner, two Hangul fillers, the blank braille cell, more Hangul fillers.
+        blanks = [chr(point) for point in (0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x2800, 0x3164, 0xFFA0)]
+        for blank in blanks:
+            code = f"u{ord(blank):04x}"
+            self.assertNotIn(blank, self.reminder(f"Demo{blank}Cafe", f"Hello{blank}there"), code)
+            self.assertIn(code, registry.one_line(blank), code)
+            self.assertIn(code, registry.quoted(blank), code)
+            # A careless sentence, and a refused call's row, each in a chat of its own.
+            careless = execute("remind", {"customer": blank, "text": blank}, f"chat-{code}")
+            self.assertNotIn(blank, careless["summary"], code)
+            execute("pay", {"to": blank}, f"chat-{code}")
+            self.assertEqual(audit_log(f"chat-{code}")[-1]["arguments"], {"to": blank})
+        for row in self.query("SELECT action, arguments, result FROM audit_log"):
+            self.assertEqual([c for c in "".join(row) if c in blanks], [])
+        self.assertTrue(verify_log()["intact"])
+
+    def test_curly_quotation_mark_cannot_pass_for_the_closing_one(self):
+        closing, opening = chr(0x201D), chr(0x201C)
+        name = f"Demo Cafe{closing}? Checked by your bank. Send to {opening}it"
+        line = self.reminder(name, "Hello").split("\n")[0]
+        self.assertEqual(line.count('"'), 2)
+        self.assertNotIn(closing, line)
+        self.assertNotIn(opening, line)
+        for point in (0x201E, 0x201F, 0x2033, 0x02BA, 0x301E, 0xFF02):
+            self.assertNotIn(chr(point), registry.one_line(f"a{chr(point)}b"), hex(point))
+        # An apostrophe is no quotation mark: it stays.
+        self.assertEqual(registry.one_line("Mama" + chr(0x2019) + "s"), '"Mama' + chr(0x2019) + 's"')
+
+    def test_long_run_of_blanks_cannot_push_words_onto_a_line_of_their_own(self):
+        for blank in (" ", chr(0x00A0), chr(0x3000)):
+            gap = blank * 300
+            for shown in (self.reminder(f"Demo Cafe{gap}> Dear customer", f"Hi{gap}Checked by your bank"),
+                          execute("remind", {"customer": "x", "text": f"Hi{gap}Press Yes"}, "s1")["summary"]):
+                self.assertNotIn(blank * 4, shown, hex(ord(blank)))
+        # Ordinary spacing is left alone, and so is what the action receives.
+        self.assertEqual(registry.quoted("Hello.  Two spaces.   Three."), "> Hello.  Two spaces.   Three.")
+        spaced = {"customer": "Tamada Cafe", "text": "a" + " " * 50 + "b"}
+        confirm(self.ask(arguments=spaced), True, "s1")
+        self.assertEqual(self.calls[-1], ("remind", spaced))
+        self.assertEqual(audit_log("s1")[-1]["arguments"], spaced)
+
     def test_helpers_take_whatever_they_are_given(self):
         self.assertEqual(registry.one_line(5), '"5"')
         self.assertEqual(registry.quoted(""), ">")

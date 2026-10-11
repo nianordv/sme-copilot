@@ -27,7 +27,7 @@ class ConfirmationTests(unittest.TestCase):
 
         registry.register(registry.Action(
             "send_reminder", "Test reminder", {"type": "object"}, "yellow", reminder))
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         self.addCleanup(self.client.close)
 
     def request(self):
@@ -57,6 +57,13 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(self.client.post("/confirm", json=request).json()["status"], "error")
         request["session_id"] = "owner"
         self.assertEqual(self.client.post("/confirm", json=request).json()["status"], "ok")
+
+    def test_foreign_host_name_cannot_approve(self):
+        request = self.request()
+        response = self.client.post("/confirm", json=request, headers={"Host": "evil.example:8000"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.calls, [])
+        self.assertIn(request["confirmation_id"], registry._pending)
 
     def test_approval_must_be_boolean_and_arguments_cannot_be_replaced(self):
         request = self.request()

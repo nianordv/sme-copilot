@@ -3,6 +3,7 @@ from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
@@ -12,6 +13,8 @@ from backend.actions import registry
 from backend.agent import stream_agent
 
 app = FastAPI(title="BillBoard API")
+# Answer only under a local name, so a website cannot reach the API under its own (DNS rebinding).
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 register_demo_actions()
 register_lookup_actions()
 

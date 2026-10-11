@@ -84,7 +84,7 @@ async def stream_agent(messages, session_id):
                 if isinstance(detail, str):
                     label += f" — {detail}"
                 # Log names only; avoid logging reminder text or financial values.
-                logger.warning("Action %s returned %s; argument fields: %s",
+                logger.warning("Action %r returned %s; argument fields: %s",
                                name, status, sorted(arguments))
             yield {"type": "action", "name": name, "status": status, "label": label}
 

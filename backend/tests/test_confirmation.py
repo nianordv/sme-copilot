@@ -9,16 +9,15 @@ from fastapi.testclient import TestClient
 from backend import agent
 from backend.main import app
 from backend.actions import registry
+from backend.tests.helpers import use_temporary_database
 
 
 class ConfirmationTests(unittest.TestCase):
     def setUp(self):
-        self.pending = patch.dict(registry._pending, {}, clear=True)
         self.actions = patch.dict(registry._actions, {}, clear=True)
-        self.pending.start()
         self.actions.start()
-        self.addCleanup(self.pending.stop)
         self.addCleanup(self.actions.stop)
+        use_temporary_database(self)
         self.calls = []
 
         def reminder(customer, text):
@@ -63,7 +62,8 @@ class ConfirmationTests(unittest.TestCase):
         response = self.client.post("/confirm", json=request, headers={"Host": "evil.example:8000"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.calls, [])
-        self.assertIn(request["confirmation_id"], registry._pending)
+        # The request is still waiting: the owner's own press works afterwards.
+        self.assertEqual(self.client.post("/confirm", json=request).json()["status"], "ok")
 
     def test_approval_must_be_boolean_and_arguments_cannot_be_replaced(self):
         request = self.request()
@@ -76,7 +76,7 @@ class ConfirmationTests(unittest.TestCase):
 
     def test_unavailable_request_is_reported_without_running(self):
         request = self.request()
-        registry._pending.clear()  # Same effect as a server restart in this phase.
+        request["confirmation_id"] = "never-issued"
         response = self.client.post("/confirm", json=request)
         self.assertEqual(response.json()["status"], "error")
         self.assertEqual(self.calls, [])
@@ -94,8 +94,9 @@ class ConfirmationTests(unittest.TestCase):
         events = [json.loads(line) for line in response.text.splitlines()]
         self.assertEqual(events[0]["status"], "error")
         self.assertEqual(self.calls, [])
-        self.assertIn(request["confirmation_id"], registry._pending)
         self.assertNotIn("confirm", [action["name"] for action in registry.list_actions()])
+        # The request is still waiting: only the owner's press approves it.
+        self.assertEqual(self.client.post("/confirm", json=request).json()["status"], "ok")
 
 
 if __name__ == "__main__":

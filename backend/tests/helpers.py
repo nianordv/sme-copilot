@@ -8,7 +8,9 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from backend.actions import registry
 from backend.bank.seed import LEDGER_COLUMNS, seed
 
 SNAPSHOT = "2026-10-03"
@@ -39,6 +41,17 @@ def invoice(invoice_id, customer_id, segment, city, issue, due, amount, paid="",
         status = "open_overdue" if due < SNAPSHOT else "open_not_due"
     return [invoice_id, customer_id, segment, city, issue, due, paid, writeoff,
             status, f"{amount:.2f}", str(terms), "", ""]
+
+
+def use_temporary_database(test):
+    """Points RIGHTSIZE_DB at an empty temporary database for one test. The
+    registry adds its own tables to it; there are no books in it."""
+    database = Path(tempfile.mkdtemp()) / "records.db"
+    sqlite3.connect(database).close()
+    pointed = patch.dict(os.environ, {"RIGHTSIZE_DB": str(database)})
+    pointed.start()
+    test.addCleanup(pointed.stop)
+    return database
 
 
 class BooksTestCase(unittest.TestCase):
@@ -90,3 +103,32 @@ class BooksTestCase(unittest.TestCase):
             return rows
         finally:
             conn.close()
+
+
+NO_ARGUMENTS = {"type": "object", "properties": {}, "additionalProperties": False}
+ANY_BOOKS = [invoice("INV-01", "CL0001", "Cafe", "Tbilisi", "2026-08-01", "2026-08-31", 100)]
+
+
+class RegistryTestCase(BooksTestCase):
+    """An empty registry over a temporary database. The real actions are put
+    back afterwards."""
+
+    rows = ANY_BOOKS
+
+    def setUp(self):
+        super().setUp()
+        emptied = patch.dict(registry._actions, {}, clear=True)
+        emptied.start()
+        self.addCleanup(emptied.stop)
+        self.calls = []  # (action name, arguments) for every handler that ran
+
+    def add(self, name, level, parameters=NO_ARGUMENTS, handler=None, summarize=None):
+        def record(**arguments):
+            self.calls.append((name, arguments))
+            return {"done": name}
+
+        registry.register(registry.Action(
+            name, f"A {level} test action.", parameters, level, handler or record, summarize))
+
+    def decisions(self, session_id="s1"):
+        return [(row["action"], row["decision"]) for row in registry.audit_log(session_id)]

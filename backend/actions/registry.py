@@ -1,6 +1,7 @@
 """The single execution boundary between model requests and actions.
 
-Action: name, description, parameters (JSON Schema), level, handler(**arguments).
+Action: name, description, parameters (JSON Schema), level, handler(**arguments),
+and optionally summarize(**arguments), the sentence the owner is asked to approve.
 register(action) adds an action; list_actions() returns serialisable descriptions.
 execute(name, arguments, session_id) and
 confirm(confirmation_id, approved, session_id) return one of:
@@ -8,23 +9,129 @@ confirm(confirmation_id, approved, session_id) return one of:
   {"status": "needs_confirmation", "confirmation_id": str, "summary": str}
   {"status": "refused", "reason": str}
   {"status": "error", "message": str}
+unlock(session_id) clears a lock; audit_log() and verify_log() only read.
 
-Phase 0: Green runs, Yellow is stored in memory pending confirmation, Red never
-runs. Confirmation belongs to one session and is consumed before the handler
-starts. Only trusted server code should call confirm; no action exposes it.
+Levels: Green runs. Yellow is stored in the database with its exact arguments
+and runs only when confirm() approves it: an ID works once, in one session, for
+10 minutes, and what runs is what was stored. Red never runs. Arguments are
+checked against the action's schema first; "30" sent for a number becomes 30.
 
-Not yet implemented: authentication, schema enforcement, expiry, persistence,
-audit logging and session locks. The catalog is process-local; restart loses
-pending confirmations. A session ID is a scope marker, not proof of identity.
+Only trusted server code may call confirm() and unlock(). No action exposes
+them and both refuse to run from inside an action, so text produced by the
+model cannot approve anything.
+
+Log: every call and every confirmation adds one row to the audit_log table:
+time, session, action, arguments, level, decision and a short result. Decisions
+are ran, waiting, approved, declined, refused, expired, error and unlocked.
+Rows are only added: nothing here edits or deletes one, and the database
+rejects an UPDATE, a DELETE or a replacing INSERT. Each row carries the SHA-256
+of its content and of the row before it, so verify_log() finds a row that was
+changed, removed or slipped in, even after the database's own protection is
+removed. Whoever can rewrite the whole file can rebuild that chain or cut rows
+off its end, so the last fingerprint belongs in the evidence we submit.
+
+No log, no action: a decision and its row are saved in one transaction. A
+yellow action runs only after its "approved" row is saved, and a result is
+returned only after its "ran" row is saved. Every logged field has a size
+limit, and arguments too long to log in full are turned down before the owner
+is asked, so what the owner approves is in the log word for word.
+
+Lock: after 3 refused calls in one session, every yellow and red call in that
+session is refused until unlock(session_id), which stands in for the owner
+re-verifying in the bank app. The lock is worked out from the log.
+
+Not implemented: authentication. A session ID is a scope marker, not proof of
+identity, so the lock and the one-session rule bind a chat, not a person.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+import functools
+import hashlib
 import inspect
 import json
+import logging
+from pathlib import Path
+import re
+import sqlite3
 from threading import RLock
-from typing import Callable, Literal
+import traceback
+from typing import Any, Callable, Literal
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+
+from backend.bank.db import connect
+
+logger = logging.getLogger(__name__)
+
+CONFIRM_MINUTES = 10
+LOCK_AFTER_REFUSALS = 3
+# Waiting requests are kept few: a session's sixth replaces its oldest, and
+# past the total no more are stored until some are answered or expire.
+WAITING_PER_SESSION = 5
+WAITING_IN_TOTAL = 1000
+
+# Size limits, in characters. Log rows are never removed, so nothing unlimited goes in.
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")  # The same rule as the endpoints.
+NAME_LIMIT = 100         # action names and confirmation IDs, as logged
+TEXT_LIMIT = 2000        # one text argument, unless its schema sets maxLength
+ARGUMENTS_LIMIT = 4000   # the arguments of one call, as JSON
+RESULT_LIMIT = 300       # the short result, as logged
+
+# A call with no usable session ID is logged under this. The brackets keep it
+# from ever being a valid ID itself.
+INVALID_SESSION = "(invalid)"
+LOGGED_COLUMNS = ("time", "session_id", "action", "arguments", "level", "decision",
+                  "result", "confirmation_id")
+
+OWNER_ONLY = "The assistant is not allowed to do this. Only the owner can, in the bank app."
+LOCKED = (f"This session is locked after {LOCK_AFTER_REFUSALS} refused requests. "
+          "Only look-ups work until the owner re-verifies in the bank app.")
+EXPIRED = (f"This request expired after {CONFIRM_MINUTES} minutes. Nothing was done. "
+           "Ask again if it is still wanted.")
+NOT_WAITING = "Confirmation unavailable for this session."
+TOO_MANY = "Too many requests are waiting for approval. Answer them or try again in a few minutes."
+FAILED = "Action execution failed."
+UNAVAILABLE = "The action log is unavailable, so the request was not carried out."
+RAN_UNRECORDED = "The action ran, but its result could not be recorded. Check before asking again."
+
+TABLES = """
+CREATE TABLE IF NOT EXISTS audit_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    time TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    level TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    result TEXT NOT NULL,
+    confirmation_id TEXT,
+    row_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_log_by_session ON audit_log (session_id, log_id);
+CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+-- INSERT OR REPLACE removes the old row without firing the DELETE trigger.
+CREATE TRIGGER IF NOT EXISTS audit_log_no_replace BEFORE INSERT ON audit_log
+WHEN EXISTS (SELECT 1 FROM audit_log WHERE log_id = NEW.log_id)
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+-- One row per request still waiting for the owner. Answered and expired
+-- requests are removed; the log keeps what became of them.
+CREATE TABLE IF NOT EXISTS confirmations (
+    confirmation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
 
 
 @dataclass(frozen=True)
@@ -34,36 +141,35 @@ class Action:
     parameters: dict
     level: Literal["green", "yellow", "red"]
     handler: Callable[..., dict]
-
-
-@dataclass(frozen=True)
-class PendingCall:
-    action: Action
-    arguments: dict
-    session_id: str
+    # Yellow only, optional: turns the arguments into the sentence the owner
+    # approves. It must show everything that will happen, because the owner
+    # reads this sentence and not the arguments.
+    summarize: Callable[..., str] | None = None
 
 
 _actions: dict[str, Action] = {}
-_pending: dict[str, PendingCall] = {}
 _lock = RLock()
+# The name of the action whose handler is running right now, if any.
+_inside_action: ContextVar[str | None] = ContextVar("inside_action", default=None)
 
 
 def register(action: Action) -> None:
     if not isinstance(action.name, str) or not action.name.strip():
         raise ValueError("An action needs a nonempty name.")
+    if len(action.name) > NAME_LIMIT:
+        raise ValueError(f"An action name has at most {NAME_LIMIT} characters.")
     if action.level not in {"green", "yellow", "red"}:
         raise ValueError("Unknown permission level.")
     if not callable(action.handler):
         raise ValueError("The handler must be callable.")
     if not isinstance(action.parameters, dict):
         raise ValueError("Parameters must be a JSON Schema dictionary.")
-    json.dumps(action.parameters, allow_nan=False)
+    _arguments_model(action)  # Fails here, at start-up, if the schema cannot be checked.
     with _lock:
         if action.name in _actions:
             raise ValueError(f"Action already registered: {action.name}")
         # Detach the stored schema from the caller's mutable dictionary.
-        _actions[action.name] = Action(action.name, action.description,
-            deepcopy(action.parameters), action.level, action.handler)
+        _actions[action.name] = replace(action, parameters=deepcopy(action.parameters))
 
 
 def list_actions() -> list[dict]:
@@ -73,67 +179,469 @@ def list_actions() -> list[dict]:
                 for a in _actions.values()]
 
 
-def _run(action: Action, arguments: dict) -> dict:
-    try:
-        result = action.handler(**arguments)
-        if not isinstance(result, dict):
-            raise TypeError("An action must return a dictionary.")
-        json.dumps(result, allow_nan=False)
-        return {"status": "ok", "result": result}
-    except Exception:
-        # Avoid exposing internal exception details to the model/client.
-        return {"status": "error", "message": "Action execution failed."}
-
-
 def execute(name, arguments, session_id) -> dict:
-    if not isinstance(session_id, str) or not session_id.strip():
-        return {"status": "error", "message": "A session ID is required."}
-    if not isinstance(name, str):
-        return {"status": "error", "message": "Unknown action."}
-    with _lock:
-        action = _actions.get(name)
-    if action is None:
-        return {"status": "error", "message": "Unknown action."}
-    if action.level == "red":
-        return {"status": "refused", "reason": "This action is prohibited."}
-    if not isinstance(arguments, dict) or not all(isinstance(k, str) for k in arguments):
-        return {"status": "error", "message": "Arguments must be a JSON object."}
     try:
-        # Basic JSON and signature checks; full schema/type validation is A3.
-        json.dumps(arguments, allow_nan=False)
-        inspect.signature(action.handler).bind(**arguments)
-        stored_arguments = deepcopy(arguments)
-    except (TypeError, ValueError, OverflowError, RecursionError):
-        return {"status": "error", "message": "Invalid action arguments."}
+        with _records() as conn:
+            if not _valid_session(session_id):
+                return _bad_session(conn, name, session_id)
+            return _execute(conn, name, arguments, session_id)
+    except Exception as problem:
+        _report("execute", problem)
+        return _error(UNAVAILABLE)
+
+
+def confirm(confirmation_id, approved, session_id) -> dict:
+    try:
+        with _records() as conn:
+            if not _valid_session(session_id):
+                return _bad_session(conn, "confirm", session_id)
+            return _confirm(conn, confirmation_id, approved, session_id)
+    except Exception as problem:
+        _report("confirm", problem)
+        return _error(UNAVAILABLE)
+
+
+def unlock(session_id) -> dict:
+    """Clear a session's lock. This stands in for the owner re-verifying in the
+    bank app, so only trusted server code may call it."""
+    try:
+        with _records() as conn:
+            if not _valid_session(session_id):
+                return _bad_session(conn, "unlock", session_id)
+            with _transaction(conn):
+                caller = _inside_action.get()
+                if caller is not None:
+                    _log(conn, session_id, "unlock", {}, "owner", "refused",
+                         f"called from inside {caller}")
+                    return _refused("An action cannot unlock a session.")
+                was_locked = _is_locked(conn, session_id)
+                _log(conn, session_id, "unlock", {}, "owner", "unlocked",
+                     "was locked" if was_locked else "was not locked")
+            return {"status": "ok", "result": {"was_locked": was_locked}}
+    except Exception as problem:
+        _report("unlock", problem)
+        return _error(UNAVAILABLE)
+
+
+def audit_log(session_id=None) -> list[dict]:
+    """The log rows, oldest first, for one session or for all of them."""
+    sql = ("SELECT log_id, time, session_id, action, arguments, level, decision, "
+           "result, confirmation_id FROM audit_log")
+    parameters: tuple = ()
+    if session_id is not None:
+        sql += " WHERE session_id = ?"
+        parameters = (_text(session_id),)
+    with _records() as conn:
+        rows = conn.execute(sql + " ORDER BY log_id", parameters).fetchall()
+    return [{**dict(row), "arguments": json.loads(row["arguments"])} for row in rows]
+
+
+def verify_log() -> dict:
+    """Work out every row's fingerprint again and compare it with the one
+    stored. Returns whether the log is intact, the first row that is not, and
+    the last fingerprint, which stands for the whole log up to that point."""
+    with _records() as conn:
+        rows = conn.execute("SELECT * FROM audit_log ORDER BY log_id").fetchall()
+    previous = ""
+    for row in rows:
+        if row["row_hash"] != _fingerprint(previous, [row[column] for column in LOGGED_COLUMNS]):
+            return {"intact": False, "rows": len(rows), "first_bad_row": row["log_id"]}
+        previous = row["row_hash"]
+    return {"intact": True, "rows": len(rows), "last_fingerprint": previous or None}
+
+
+# --------------------------------------------------------------------- the rules
+def _execute(conn, name, arguments, session_id) -> dict:
+    with _lock:
+        action = _actions.get(name) if isinstance(name, str) else None
+    if action is None:
+        with _transaction(conn):
+            _log(conn, session_id, name, arguments, "unknown", "error", "unknown action")
+        return _error("Unknown action.")
+
+    if action.level == "red":
+        # Refused before the arguments are even looked at.
+        with _transaction(conn):
+            _log(conn, session_id, name, arguments, "red", "refused", OWNER_ONLY)
+            locked = _is_locked(conn, session_id)
+        return _refused(f"{OWNER_ONLY} {LOCKED}" if locked else OWNER_ONLY)
+
+    if action.level == "yellow":
+        # A locked session is turned away before its arguments are looked at, too.
+        with _transaction(conn):
+            if _is_locked(conn, session_id):
+                _log(conn, session_id, name, arguments, "yellow", "refused", "session locked")
+                return _refused(LOCKED)
+
+    try:
+        checked = _check_arguments(action, arguments)
+    except ValueError as problem:
+        reply = _error(str(problem))
+        with _transaction(conn):
+            _log(conn, session_id, name, arguments, action.level, "error", reply["message"])
+        return reply
+
     if action.level == "green":
-        return _run(action, stored_arguments)
+        return _run(conn, action, checked, session_id)
+    return _ask(conn, action, checked, session_id)
+
+
+def _ask(conn, action, arguments, session_id) -> dict:
+    """Store a yellow call beside its "waiting" row. Nothing runs here."""
+    try:
+        summary = _text(_summary(action, arguments))
+    except Exception as problem:
+        _report(action.name, problem)
+        with _transaction(conn):
+            _log(conn, session_id, action.name, arguments, "yellow", "error", FAILED)
+        return _error(FAILED)
 
     confirmation_id = str(uuid4())
-    with _lock:
-        _pending[confirmation_id] = PendingCall(action, stored_arguments, session_id)
-    if action.name == "send_reminder":
-        summary = (
-            f"Send this reminder to {stored_arguments['customer']}?\n\n"
-            f"{stored_arguments['text']}"
-        )
-    else:
-        summary = (f"Approve {action.name.replace('_', ' ')}?\n\n"
-                   + json.dumps(stored_arguments, ensure_ascii=False, allow_nan=False))
+    now = _now()
+    with _transaction(conn):
+        if not _make_room(conn, session_id, now):
+            _log(conn, session_id, action.name, arguments, "yellow", "error", TOO_MANY)
+            return _error(TOO_MANY)
+        conn.execute(
+            "INSERT INTO confirmations (confirmation_id, session_id, action, arguments, "
+            "expires_at) VALUES (?, ?, ?, ?, ?)",
+            (confirmation_id, session_id, action.name, _json(arguments),
+             _stamp(now + timedelta(minutes=CONFIRM_MINUTES))))
+        _log(conn, session_id, action.name, arguments, "yellow", "waiting", summary,
+             confirmation_id)
     return {"status": "needs_confirmation", "confirmation_id": confirmation_id,
             "summary": summary}
 
 
-def confirm(confirmation_id, approved, session_id) -> dict:
-    if not isinstance(approved, bool):
-        return {"status": "error", "message": "Approval must be true or false."}
-    if not isinstance(confirmation_id, str) or not isinstance(session_id, str):
-        return {"status": "error", "message": "Invalid confirmation request."}
-    with _lock:
-        pending = _pending.get(confirmation_id)
-        if pending is None or pending.session_id != session_id:
-            return {"status": "error", "message": "Confirmation unavailable for this session."}
-        # Atomic consumption makes duplicate/concurrent approvals at-most-once.
-        del _pending[confirmation_id]
-    if not approved:
-        return {"status": "refused", "reason": "The owner declined this action."}
-    return _run(pending.action, pending.arguments)
+def _confirm(conn, confirmation_id, approved, session_id) -> dict:
+    def log(action, arguments, level, decision, result):
+        _log(conn, session_id, action, arguments, level, decision, result,
+             _text(confirmation_id))
+
+    # One transaction from reading the request to deciding it: a second press,
+    # or a refusal that locks the session, cannot land in the middle.
+    with _transaction(conn):
+        caller = _inside_action.get()
+        if caller is not None:
+            log("confirm", {}, "owner", "refused", f"called from inside {caller}")
+            return _refused("An action cannot approve a request. Only the owner can.")
+        if not isinstance(approved, bool):
+            log("confirm", {}, "owner", "error", "approval was not true or false")
+            return _error("Approval must be true or false.")
+        if not isinstance(confirmation_id, str):
+            log("confirm", {}, "owner", "error", "confirmation ID was not text")
+            return _error("Invalid confirmation request.")
+
+        pending = conn.execute(
+            "SELECT * FROM confirmations WHERE confirmation_id = ?",
+            (_text(confirmation_id),)).fetchone()
+        # A wrong ID and another session's ID get the same answer as a used
+        # one, so the reply says nothing about which IDs exist.
+        if pending is None or pending["session_id"] != session_id:
+            log("confirm", {}, "owner", "error", "no such request in this session")
+            return _error(NOT_WAITING)
+
+        name, stored = pending["action"], json.loads(pending["arguments"])
+        now = _now()
+        if pending["expires_at"] < _stamp(now):
+            _expire(conn, pending, now)
+            return _refused(EXPIRED)
+        if approved and _is_locked(conn, session_id):
+            # Left waiting, so the owner can approve it after unlocking.
+            log(name, stored, "yellow", "refused", "session locked")
+            return _refused(LOCKED)
+
+        # The ID is used up, and the decision logged, before anything runs.
+        conn.execute("DELETE FROM confirmations WHERE confirmation_id = ?",
+                     (pending["confirmation_id"],))
+        if not approved:
+            log(name, stored, "yellow", "declined", "the owner said no")
+            return _refused("The owner declined this action.")
+        with _lock:
+            action = _actions.get(name)
+        if action is None or action.level != "yellow":
+            log(name, stored, "yellow", "error", "action is no longer available")
+            return _error("This action is no longer available.")
+        log(name, stored, "yellow", "approved", "the owner said yes")
+
+    return _run(conn, action, stored, session_id, pending["confirmation_id"])
+
+
+def _run(conn, action, arguments, session_id, confirmation_id=None) -> dict:
+    marker = _inside_action.set(action.name)
+    try:
+        # A copy: whatever the handler does to it, the log keeps what was asked.
+        result = action.handler(**deepcopy(arguments))
+        if not isinstance(result, dict):
+            raise TypeError("An action must return a dictionary.")
+        json.dumps(result, allow_nan=False)
+        reply = {"status": "ok", "result": result}
+    except Exception as problem:
+        # Avoid exposing internal exception details to the model/client.
+        _report(action.name, problem)
+        reply = _error(FAILED)
+    finally:
+        _inside_action.reset(marker)
+
+    ran = reply["status"] == "ok"
+    try:
+        with _transaction(conn):
+            _log(conn, session_id, action.name, arguments, action.level,
+                 "ran" if ran else "error",
+                 _json(reply["result"]) if ran else reply["message"], confirmation_id)
+    except Exception as problem:
+        _report(action.name, problem)
+        if ran and action.level == "yellow":
+            # Its "approved" row is in the log. Say plainly that it happened.
+            return _error(RAN_UNRECORDED)
+        # A look-up changes nothing, and its result is not handed back unlogged.
+        return _error(UNAVAILABLE)
+    return reply
+
+
+def _is_locked(conn, session_id) -> bool:
+    refusals = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE session_id = :s AND decision = 'refused' "
+        "AND log_id > COALESCE((SELECT MAX(log_id) FROM audit_log "
+        "WHERE session_id = :s AND decision = 'unlocked'), 0)",
+        {"s": session_id}).fetchone()[0]
+    return refusals >= LOCK_AFTER_REFUSALS
+
+
+def _make_room(conn, session_id, now) -> bool:
+    """Keep the stored requests few. False if there is no room for one more."""
+    def waiting():
+        return conn.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0]
+
+    if waiting() >= WAITING_IN_TOTAL:
+        overdue = conn.execute(
+            "SELECT * FROM confirmations WHERE expires_at < ?", (_stamp(now),)).fetchall()
+        for row in overdue:
+            _expire(conn, row, now)
+        if waiting() >= WAITING_IN_TOTAL:
+            return False
+    # A session keeps its newest requests; the oldest gives way to a new one.
+    oldest = conn.execute(
+        "SELECT * FROM confirmations WHERE session_id = ? "
+        "ORDER BY expires_at DESC, rowid DESC LIMIT -1 OFFSET ?",
+        (session_id, WAITING_PER_SESSION - 1)).fetchall()
+    for row in oldest:
+        _expire(conn, row, now)
+    return True
+
+
+def _expire(conn, row, now) -> None:
+    """Remove a waiting request for good and log why it will never run."""
+    reason = (f"not answered within {CONFIRM_MINUTES} minutes"
+              if row["expires_at"] < _stamp(now) else "replaced by a newer request")
+    conn.execute("DELETE FROM confirmations WHERE confirmation_id = ?",
+                 (row["confirmation_id"],))
+    _log(conn, row["session_id"], row["action"], json.loads(row["arguments"]), "yellow",
+         "expired", reason, row["confirmation_id"])
+
+
+def _valid_session(session_id) -> bool:
+    # Plain letters, digits, _ and - only: nothing that can fail to encode,
+    # hide a difference, or be read two ways by the database.
+    return isinstance(session_id, str) and SESSION_ID.fullmatch(session_id) is not None
+
+
+def _bad_session(conn, action, given) -> dict:
+    # Not cut down to fit: two long IDs could then become the same session.
+    # The start of what was given is kept, for whoever reads the log.
+    seen = {"session_id_given": _text(given)[:NAME_LIMIT], "length": len(_text(given))}
+    with _transaction(conn):
+        _log(conn, INVALID_SESSION, action, seen, "unknown", "error", "invalid session ID")
+    return _error("A valid session ID is required.")
+
+
+def _summary(action, arguments) -> str:
+    if action.summarize is not None:
+        return action.summarize(**deepcopy(arguments))
+    # No sentence written for this action: show the owner the exact arguments.
+    return (f"Approve {action.name.replace('_', ' ')}?\n\n"
+            + json.dumps(arguments, ensure_ascii=False, allow_nan=False))
+
+
+def _refused(reason) -> dict:
+    return {"status": "refused", "reason": reason}
+
+
+def _error(message) -> dict:
+    return {"status": "error", "message": message}
+
+
+# ------------------------------------------------------------------- the records
+@contextmanager
+def _records() -> Iterator[sqlite3.Connection]:
+    with connect() as conn:
+        conn.executescript(TABLES)
+        yield conn
+
+
+@contextmanager
+def _transaction(conn) -> Iterator[None]:
+    """Everything inside is saved together or not at all. IMMEDIATE takes the
+    write lock at the start, so what is read inside stays true until the end."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
+def _log(conn, session_id, action, arguments, level, decision, result,
+         confirmation_id=None) -> None:
+    """Add one row. Call it inside _transaction, which also keeps the chain of
+    fingerprints in order. Every field is cut to a fixed size here, the one
+    place rows are written."""
+    fields = [
+        _now().isoformat(timespec="seconds"),
+        session_id,
+        _shorten(_text(action), NAME_LIMIT),
+        _arguments_for_log(arguments),
+        level,
+        decision,
+        _shorten(_text(result), RESULT_LIMIT),
+        _shorten(_text(confirmation_id), NAME_LIMIT) if confirmation_id else None,
+    ]
+    last = conn.execute("SELECT row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1").fetchone()
+    conn.execute(
+        f"INSERT INTO audit_log ({', '.join(LOGGED_COLUMNS)}, row_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (*fields, _fingerprint(last["row_hash"] if last else "", fields)))
+
+
+def _fingerprint(previous, fields) -> str:
+    """SHA-256 of a row's content together with the fingerprint of the row
+    before it. Changing any earlier row changes every fingerprint after it."""
+    return hashlib.sha256(_json([previous, *fields]).encode()).hexdigest()
+
+
+def _arguments_for_log(arguments) -> str:
+    """The arguments as JSON, whatever they are. Checked arguments always fit.
+    Anything larger was never accepted, so its size, its SHA-256 and its start
+    are kept. Anything that cannot be written out at all is recorded as such."""
+    try:
+        if not isinstance(arguments, dict):
+            arguments = {"not_an_object": _text(arguments)[:RESULT_LIMIT]}
+        text = _json(arguments)
+        if len(text) > ARGUMENTS_LIMIT:
+            text = _json({"too_long": len(text),
+                          "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                          "starts": text[:RESULT_LIMIT]})
+        return text
+    except Exception as problem:
+        # A refused call must reach the log even when its arguments cannot.
+        return _json({"could_not_be_written": type(problem).__name__})
+
+
+def _json(value) -> str:
+    """JSON that can always be stored. Georgian and other scripts stay as
+    written. Half of a character pair, which cannot be stored as it is, is
+    written as its JSON escape and reads back as the same character."""
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _text(value) -> str:
+    """Any value as text that can always be stored."""
+    try:
+        return str(value).encode("utf-8", "backslashreplace").decode("utf-8")
+    except Exception as problem:
+        return f"({type(problem).__name__})"
+
+
+def _shorten(text, limit) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _now() -> datetime:
+    # The real clock, unlike business dates: the log records when a call
+    # happened, and a request expires 10 real minutes after it was made.
+    return datetime.now(timezone.utc)
+
+
+def _stamp(moment) -> str:
+    # Always six decimals, so these strings sort in time order.
+    return moment.isoformat(timespec="microseconds")
+
+
+def _report(what, problem) -> None:
+    """One line in the server log for whoever runs the server; the reply to the
+    model stays vague. Text that may come from the model is written with %r, so
+    a line break in it cannot start a second log line."""
+    frames = traceback.extract_tb(problem.__traceback__)[-3:]
+    where = " < ".join(f"{Path(frame.filename).name}:{frame.lineno}" for frame in reversed(frames))
+    logger.error("%r failed at %s: %s: %r", what, where or "?", type(problem).__name__,
+                 _shorten(_text(problem), RESULT_LIMIT))
+
+
+# ------------------------------------------------------------ checking arguments
+_JSON_TYPES = {"string": str, "integer": int, "number": float, "boolean": bool,
+               "array": list, "object": dict}
+_LIMITS = {"minimum": "ge", "maximum": "le", "exclusiveMinimum": "gt", "exclusiveMaximum": "lt",
+           "minLength": "min_length", "maxLength": "max_length"}
+
+
+def _arguments_model(action) -> type[BaseModel]:
+    """A pydantic model built from the action's JSON Schema, so the schema the
+    model is shown and the check its arguments get cannot drift apart."""
+    try:
+        schema_text = json.dumps(action.parameters, allow_nan=False, sort_keys=True)
+        return _build_model(action.name, schema_text)
+    except Exception as problem:
+        raise ValueError(f"The parameters of {action.name} cannot be checked: {problem}") from None
+
+
+@functools.lru_cache(maxsize=None)
+def _build_model(name, schema_text) -> type[BaseModel]:
+    schema = json.loads(schema_text)
+    required = set(schema.get("required", []))
+    fields: dict[str, Any] = {}
+    for key, spec in schema.get("properties", {}).items():
+        declared = spec.get("type")
+        kind: Any = _JSON_TYPES.get(declared, Any) if isinstance(declared, str) else Any
+        limits = {ours: spec[theirs] for theirs, ours in _LIMITS.items() if theirs in spec}
+        if "enum" in spec:
+            kind = Literal[tuple(spec["enum"])]
+        elif kind is str:
+            # No text argument is unlimited, whether or not its schema says so.
+            limits.setdefault("max_length", TEXT_LIMIT)
+        if key in required:
+            fields[key] = (kind, Field(..., **limits))
+        else:
+            fields[key] = (kind | None, Field(None, **limits))
+    for key in required - fields.keys():
+        fields[key] = (Any, Field(...))
+    # As in JSON Schema: other arguments are allowed unless the schema rules them out.
+    extra = "forbid" if schema.get("additionalProperties") is False else "allow"
+    return create_model(f"{name}_arguments", __config__=ConfigDict(extra=extra), **fields)
+
+
+def _check_arguments(action, arguments) -> dict:
+    """The arguments, checked and tidied ("30" becomes 30, an empty optional
+    argument is left out). Raises ValueError with the message to return."""
+    if not isinstance(arguments, dict) or not all(isinstance(key, str) for key in arguments):
+        raise ValueError("Arguments must be a JSON object.")
+    try:
+        json.dumps(arguments, allow_nan=False)
+        checked = _arguments_model(action).model_validate(arguments).model_dump(exclude_none=True)
+        inspect.signature(action.handler).bind(**checked)
+        text = json.dumps(checked, ensure_ascii=False, allow_nan=False)
+        text.encode("utf-8")  # Half of a character pair cannot be stored.
+    except ValidationError as invalid:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'arguments'}: {error['msg']}"
+            for error in invalid.errors()[:3])
+        message = f"Invalid action arguments: {_text(problems)}"
+        raise ValueError(_shorten(message, RESULT_LIMIT)) from None
+    except Exception:
+        # Whatever went wrong, the call is turned down and still gets its log row.
+        raise ValueError("Invalid action arguments.") from None
+    if len(text) > ARGUMENTS_LIMIT:
+        raise ValueError("Invalid action arguments: too long.")
+    return checked

@@ -5,16 +5,15 @@ from unittest.mock import patch
 
 from backend.actions import registry
 from backend.actions.demo import register_demo_actions
+from backend.tests.helpers import use_temporary_database
 
 
 class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.actions = patch.dict(registry._actions, {}, clear=True)
-        self.pending = patch.dict(registry._pending, {}, clear=True)
         self.actions.start()
-        self.pending.start()
         self.addCleanup(self.actions.stop)
-        self.addCleanup(self.pending.stop)
+        use_temporary_database(self)
         self.calls = []
 
     def add_action(self, level="yellow", handler=None):
@@ -93,7 +92,8 @@ class RegistryTests(unittest.TestCase):
             raise RuntimeError("private connection details")
         self.add_action(handler=fail)
         cid = self.request()["confirmation_id"]
-        result = registry.confirm(cid, True, "owner")
+        with self.assertLogs(registry.logger, "ERROR"):
+            result = registry.confirm(cid, True, "owner")
         self.assertEqual(result["status"], "error")
         self.assertNotIn("private", json.dumps(result))
         self.assertEqual(registry.confirm(cid, True, "owner")["status"], "error")
@@ -101,7 +101,8 @@ class RegistryTests(unittest.TestCase):
 
     def test_nonserialisable_result_is_error(self):
         self.add_action("green", lambda payload: {"bad": object()})
-        self.assertEqual(self.request()["status"], "error")
+        with self.assertLogs(registry.logger, "ERROR"):
+            self.assertEqual(self.request()["status"], "error")
 
     def test_catalog_does_not_expose_handler_or_mutable_schema(self):
         self.add_action()

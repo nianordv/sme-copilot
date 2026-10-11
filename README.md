@@ -74,3 +74,23 @@ It copies the ledger columns of the invoice CSV into the database, gives each of
 Run the command again whenever the CSV or `company.json` changes. It rebuilds the books and leaves everything else in the database alone. Git ignores the database file.
 
 "Today" in the app is the last day of the books, 3 Oct 2026, not the day you run it. `backend.bank.db.today()` returns it.
+
+## Permissions and the log
+
+Everything the AI model asks for goes through `backend/actions/registry.py`. It decides by the action's level, never by what is written in the chat.
+
+| Level | What happens |
+| --- | --- |
+| Green | Runs straight away. |
+| Yellow | Is stored and shown to the owner. It runs only when the owner presses Yes: once, within 10 minutes, in the same chat. |
+| Red | Never runs. |
+
+Every call and every Yes or No adds a row to the `audit_log` table in the same database. No action runs without the database, so build it first. Rows can only be added. After 3 refused calls in one chat, that chat can only look things up until `registry.unlock(session_id)` is called.
+
+To check that no row was changed or removed:
+
+```sh
+python -c "from backend.actions.registry import verify_log; print(verify_log())"
+```
+
+`registry.audit_log(session_id)` returns the rows themselves. Nothing checks who is calling the server, so "one chat" is not "one person".

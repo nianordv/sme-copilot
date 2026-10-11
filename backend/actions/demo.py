@@ -9,6 +9,10 @@ def send_reminder(customer, text):
             "message": "Fake reminder simulated; no message was sent."}
 
 
+def reminder_summary(customer, text):
+    return f"Send this reminder to {customer}?\n\n{text}"
+
+
 def register_demo_actions():
     register(Action(
         name="send_reminder",
@@ -16,5 +20,5 @@ def register_demo_actions():
         parameters={"type": "object", "properties": {
             "customer": {"type": "string"}, "text": {"type": "string"}},
             "required": ["customer", "text"], "additionalProperties": False},
-        level="yellow", handler=send_reminder,
+        level="yellow", handler=send_reminder, summarize=reminder_summary,
     ))

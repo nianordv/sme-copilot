@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend import agent
-from backend.actions import lookups, registry
+from backend.actions import registry
 from backend.actions.demo import register_demo_actions
 from backend.actions.lookups import (
     as_flag, as_whole_number, get_balance, get_customer, get_receivables,
@@ -217,10 +217,9 @@ class ThroughTheRegistryTests(BooksTestCase):
 
     def setUp(self):
         super().setUp()
-        for store in (registry._actions, registry._pending):
-            emptied = patch.dict(store, {}, clear=True)
-            emptied.start()
-            self.addCleanup(emptied.stop)
+        emptied = patch.dict(registry._actions, {}, clear=True)
+        emptied.start()
+        self.addCleanup(emptied.stop)
         register_lookup_actions()
 
     def run_action(self, name, arguments=None):
@@ -277,7 +276,7 @@ class ThroughTheRegistryTests(BooksTestCase):
 
     def test_missing_books_are_an_error_and_the_log_says_how_to_build_them(self):
         self.database.unlink()
-        with self.assertLogs(lookups.logger, level="ERROR") as logged:
+        with self.assertLogs(registry.logger, level="ERROR") as logged:
             reply = registry.execute("get_balance", {}, "owner")
         self.assertEqual(reply["status"], "error")
         self.assertIn("backend.bank.seed", logged.output[0])

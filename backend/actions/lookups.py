@@ -12,8 +12,6 @@ at start-up, next to register_demo_actions().
 """
 
 import difflib
-import functools
-import logging
 import sqlite3
 import statistics
 from datetime import date, timedelta
@@ -21,8 +19,6 @@ from typing import Any
 
 from backend.actions.registry import Action, register
 from backend.bank.db import connect, today
-
-logger = logging.getLogger(__name__)
 
 TOP_ROWS = 10
 MAX_OUTFLOW_DAYS = 60
@@ -342,19 +338,6 @@ def get_upcoming_outflows(days: int = 30) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ registration
-def logged(handler):
-    """The registry tells the model only that an action failed. This writes
-    the reason to the server log, for whoever is running the server."""
-    @functools.wraps(handler)
-    def run(**arguments):
-        try:
-            return handler(**arguments)
-        except Exception as problem:
-            logger.error("%s failed: %s: %s", handler.__name__, type(problem).__name__, problem)
-            raise
-    return run
-
-
 def register_lookup_actions() -> None:
     register(Action(
         name="get_receivables",
@@ -385,7 +368,7 @@ def register_lookup_actions() -> None:
             "additionalProperties": False,
         },
         level="green",
-        handler=logged(get_receivables),
+        handler=get_receivables,
     ))
 
     register(Action(
@@ -408,7 +391,7 @@ def register_lookup_actions() -> None:
             "additionalProperties": False,
         },
         level="green",
-        handler=logged(get_customer),
+        handler=get_customer,
     ))
 
     register(Action(
@@ -419,7 +402,7 @@ def register_lookup_actions() -> None:
         ),
         parameters={"type": "object", "properties": {}, "additionalProperties": False},
         level="green",
-        handler=logged(get_balance),
+        handler=get_balance,
     ))
 
     register(Action(
@@ -443,5 +426,5 @@ def register_lookup_actions() -> None:
             "additionalProperties": False,
         },
         level="green",
-        handler=logged(get_upcoming_outflows),
+        handler=get_upcoming_outflows,
     ))

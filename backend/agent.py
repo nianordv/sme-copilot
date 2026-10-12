@@ -13,6 +13,7 @@ MAX_RESULT_CHARS = 8000
 logger = logging.getLogger(__name__)
 
 ACTION_LABELS = {
+    "forecast_cash": "Calculated the cash forecast",
     "get_receivables": "Looked up unpaid invoices",
     "send_reminder": "Payment reminder",
 }

@@ -6,6 +6,8 @@ The remaining build work, split into two lists that two developers can work thro
 
 For what Rightsize is and why, read the team brief: [Idea_md.md](Idea_md.md).
 
+Added on 13 Oct: the login and the dashboard have their own document, with four more phases (A6, A7, B7, B8): [dashboard-and-login.md](dashboard-and-login.md).
+
 ## Contents
 
 - [How to use this document](#how-to-use-this-document)

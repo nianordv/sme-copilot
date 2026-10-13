@@ -19,6 +19,7 @@ Levels: Green runs. Yellow is stored in the database with its exact arguments
 and runs only when confirm() approves it: an ID works once, in one session, for
 10 minutes, and what runs is what was stored. Red never runs. Arguments are
 checked against the action's schema first; "30" sent for a number becomes 30.
+waiting_requests() lists what is stored and still waiting, for the dashboard.
 
 Only trusted server code may call confirm() and unlock(). No action exposes
 them and both refuse to run from inside an action, so text produced by the
@@ -136,6 +137,7 @@ TOO_MANY = "Too many requests are waiting for approval. Answer them or try again
 FAILED = "Action execution failed."
 UNAVAILABLE = "The action log is unavailable, so the request was not carried out."
 RAN_UNRECORDED = "The action ran, but its result could not be recorded. Check before asking again."
+CANNOT_BE_SHOWN = "This request cannot be shown here. Answer it in the chat."
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -316,6 +318,43 @@ def quoted(value) -> str:
     words of ours."""
     lines = _text(value).splitlines() or [""]
     return "\n".join(f"> {_shown(line)}".rstrip() for line in lines)
+
+
+def shown(value) -> str:
+    """For a page that shows the owner a text the model wrote, such as a saved
+    reminder: the text with its line breaks kept and every character that
+    cannot be seen written as its code, as on an approval card. Unlike
+    one_line() and quoted() it adds no marks of its own, so the page must draw
+    the text in a box of its own."""
+    return _shown(_text(value), keep="\n")
+
+
+def waiting_requests(limit=20) -> dict:
+    """The requests still waiting for the owner's Yes or No, for the dashboard:
+    the one that expires soonest first, each with the sentence its approval
+    card shows. This only reads. A request past its time is left out, and
+    left for confirm() to expire. No confirmation ID is given out: the card in
+    the chat holds it, and the owner answers there."""
+    now = _stamp(_now())
+    with _records() as conn:
+        rows = conn.execute(
+            "SELECT session_id, action, arguments, expires_at FROM confirmations "
+            "WHERE expires_at >= ? ORDER BY expires_at, rowid LIMIT ?", (now, limit)).fetchall()
+        waiting = conn.execute(
+            "SELECT COUNT(*) FROM confirmations WHERE expires_at >= ?", (now,)).fetchone()[0]
+    items = []
+    for row in rows:
+        with _lock:
+            action = _actions.get(row["action"])
+        summary = None
+        if action is not None and action.level == "yellow":
+            try:
+                summary = _shown(_text(_summary(action, json.loads(row["arguments"]))), keep="\n")
+            except Exception as problem:
+                _report(row["action"], problem)
+        items.append({"session_id": row["session_id"], "action": row["action"],
+                      "summary": summary or CANNOT_BE_SHOWN, "expires_at": row["expires_at"]})
+    return {"items": items, "not_listed": waiting - len(items)}
 
 
 # --------------------------------------------------------------------- the rules

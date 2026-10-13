@@ -16,8 +16,9 @@ The full picture is in the team brief: [docs/Idea_md.md](docs/Idea_md.md), also 
 | `feat/lookups` | The look-up actions |
 | `feat/permission-checks` | The permission levels, the log and the lock |
 | `feat/more-actions` | Reminders, alerts, plans, option costs, the credit-request draft and the owner-only actions |
+| `feat/test-script` | The script that scores the agent, and its first 13 cases |
 
-`feat/cash-forecast` adds the cash forecast action. It is built on `feat/permission-checks`, beside `feat/more-actions`, so the two still have to be merged with each other.
+`feat/cash-forecast` adds the cash forecast action. It is built on `feat/permission-checks`, beside `feat/more-actions`, so the two still have to be merged with each other. Until they are, the cases that need the forecast fail. Owner questions 1, 4, 5 and 6 each have one.
 
 ## Run the chat
 
@@ -130,3 +131,20 @@ A Yellow action can have a `prepare` step. It runs before the owner is asked and
 Text from the AI model is treated as data, never as layout. On the approval card a name appears on one line in quotation marks, and a message has `>` in front of every line, so neither can pass for the app's own words. A character that is invisible or reorders text is written out as a visible code, on the card and in the log. When you add a Yellow action, build its sentence with `registry.one_line()` for short values and `registry.quoted()` for longer text. Text the app takes from its own database needs neither.
 
 On the card, look-alike quotation marks in a name and more than three blanks in a row are written out as codes too. All of this is a best effort: no list of misleading characters is complete, and the card is still plain text. The sound fix is on the screen: draw the model's text in its own box, so that nothing inside it can pass for the app's words.
+
+## Score the agent
+
+With the server running, one command asks the agent every question in `tests/scenarios/questions.json`, checks what it did and what it answered, and prints which owner questions pass today:
+
+```sh
+python -m tests.scenarios.run
+```
+
+It reads what ran from the log, works the expected figures out from the books, and saves everything it saw to a dated file. Every run adds rows to the database, so use a copy for practice runs. [tests/scenarios/README.md](tests/scenarios/README.md) has the commands and the format of a case.
+
+To run the tests of the code, with no server and no AI model:
+
+```sh
+python -m unittest discover -s backend/tests -t .
+python -m unittest discover -s tests -t .
+```

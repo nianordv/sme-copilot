@@ -18,10 +18,10 @@ import sqlite3
 from datetime import date
 from typing import Any
 
-from backend.bank.db import connect, today
+from backend.bank.db import connect, has_table, today
 
 from .lookups import TOP_ROWS, find_customer, gel, money, no_single_customer, open_invoices
-from .registry import Action, ActionError, quoted, register
+from .registry import Action, ActionError, quoted, register, shown
 
 CANDIDATES_NAMED = 5
 
@@ -156,6 +156,25 @@ def send_reminder(customer: str, text: str) -> dict[str, Any]:
         "customer_id": match["customer_id"],
         "message_id": message_id,
         "message": "The reminder is saved in the outbox. This demo sends nothing outside the app.",
+    }
+
+
+def saved_reminders(limit: int = 10) -> dict[str, Any]:
+    """The newest reminders in the outbox, newest first, for the dashboard.
+    Not an action, and it only reads. The text may be the model's wording, so
+    it is given as the owner was shown it on the approval card."""
+    with connect() as conn:
+        if not has_table(conn, "outbox"):
+            return {"items": [], "not_listed": 0}
+        rows = conn.execute(
+            "SELECT message_id, created_on, customer_id, customer_name, text FROM outbox "
+            "ORDER BY message_id DESC LIMIT ?", (limit,)).fetchall()
+        saved = conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
+    return {
+        "items": [{"message_id": row["message_id"], "saved_on": row["created_on"],
+                   "customer": row["customer_name"], "customer_id": row["customer_id"],
+                   "text": shown(row["text"])} for row in rows],
+        "not_listed": saved - len(rows),
     }
 
 

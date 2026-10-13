@@ -20,7 +20,7 @@ once at start-up.
 import json
 from typing import Any
 
-from backend.bank.db import connect, today
+from backend.bank.db import connect, has_table, today
 from backend.bank.products import load_products, loan_cost, overdraft_cost
 
 from .lookups import by_customer, gel, largest, money, open_invoices
@@ -237,6 +237,29 @@ def prepare_credit_request(product: str, amount: float, name: str, yearly_rate_p
         "submitted": False,
         "message": "The draft is saved. Only the owner can submit it, in the bank app.",
     }
+
+
+def saved_credit_requests(limit: int = 10) -> dict[str, Any]:
+    """The newest draft requests, newest first, for the dashboard. Not an
+    action, and it only reads. Every value is ours: the terms were written
+    into the draft from the terms file when the owner approved it."""
+    with connect() as conn:
+        if not has_table(conn, "credit_request_drafts"):
+            return {"items": [], "not_listed": 0}
+        rows = conn.execute(
+            "SELECT draft_id, created_on, product, amount, details, status "
+            "FROM credit_request_drafts ORDER BY draft_id DESC LIMIT ?", (limit,)).fetchall()
+        saved = conn.execute("SELECT COUNT(*) FROM credit_request_drafts").fetchone()[0]
+    items = []
+    for row in rows:
+        details = json.loads(row["details"])
+        items.append({
+            "draft_id": row["draft_id"], "saved_on": row["created_on"], "product": row["product"],
+            "product_name": details["product"], "amount": money(row["amount"]), "currency": details["currency"],
+            "yearly_rate_percent": details["yearly_rate_percent"], "fee_percent": details["fee_percent"],
+            "term_months": details.get("term_months"), "status": row["status"],
+        })
+    return {"items": items, "not_listed": saved - len(rows)}
 
 
 # ------------------------------------------------------------------ registration

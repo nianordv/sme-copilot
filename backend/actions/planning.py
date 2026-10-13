@@ -21,10 +21,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from backend.bank.db import connect, today
+from backend.bank.db import connect, has_table, today
 
 from .lookups import gel, money
-from .registry import Action, ActionError, one_line, quoted, register
+from .registry import Action, ActionError, one_line, quoted, register, shown
 
 LARGEST_BALANCE = 1_000_000_000
 NOTHING_SENT = "The alert is saved in the app. This demo does not send notifications."
@@ -149,6 +149,38 @@ def save_plan(text: str) -> dict[str, Any]:
             "INSERT INTO plans (created_on, text) VALUES (?, ?)", (saved_on, text),
         ).lastrowid
     return {"plan_id": plan_id, "saved_on": saved_on, "status": "saved"}
+
+
+# --------------------------------------------------- reading, for the dashboard
+def saved_alerts(limit: int = 10) -> dict[str, Any]:
+    """The newest alerts, newest first. Not an action, and it only reads. The
+    note is the model's wording, given as the owner was shown it."""
+    with connect() as conn:
+        if not has_table(conn, "alerts"):
+            return {"items": [], "not_listed": 0}
+        rows = conn.execute(
+            "SELECT alert_id, created_on, alert_date, balance_below, note FROM alerts "
+            "ORDER BY alert_id DESC LIMIT ?", (limit,)).fetchall()
+        saved = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    return {
+        "items": [{"alert_id": row["alert_id"], "saved_on": row["created_on"], "date": row["alert_date"],
+                   "balance_below": None if row["balance_below"] is None else money(row["balance_below"]),
+                   "note": None if row["note"] is None else shown(row["note"])} for row in rows],
+        "not_listed": saved - len(rows),
+    }
+
+
+def newest_plan() -> dict[str, Any] | None:
+    """The plan saved last, or None when none was saved. It only reads. The
+    text is given as the owner was shown it."""
+    with connect() as conn:
+        if not has_table(conn, "plans"):
+            return None
+        row = conn.execute(
+            "SELECT plan_id, created_on, text FROM plans ORDER BY plan_id DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+    return {"plan_id": row["plan_id"], "saved_on": row["created_on"], "text": shown(row["text"])}
 
 
 # ------------------------------------------------------------------ registration

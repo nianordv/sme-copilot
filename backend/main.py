@@ -5,7 +5,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from backend.actions.borrowing import register_borrowing_actions
@@ -15,6 +15,7 @@ from backend.actions.owner_only import register_owner_only_actions
 from backend.actions.planning import register_planning_actions
 from backend.actions.reminders import register_reminder_actions
 from backend.actions import registry
+from backend.dashboard import read_dashboard
 from backend.agent import stream_agent
 from backend import auth
 
@@ -67,6 +68,20 @@ def confirm_action(request: ConfirmationRequest) -> dict:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/dashboard")
+def dashboard() -> JSONResponse:
+    # Read-only, and never through the registry or the model: see backend/dashboard.py.
+    try:
+        content = read_dashboard()
+    except FileNotFoundError as missing:
+        raise HTTPException(
+            status_code=503,
+            detail="The company's books are not built. Build them with: python -m backend.bank.seed",
+        ) from missing
+    # The company's figures are not for a browser or a proxy to keep.
+    return JSONResponse(content, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/chat", response_model=ChatResponse)

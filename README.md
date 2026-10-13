@@ -106,6 +106,34 @@ The arithmetic is in `backend/bank/products.py`, and the AI model takes no part 
 
 The rate and fee on a draft request are the ones the owner saw on the approval card, even if the file changes before the owner presses Yes.
 
+## The dashboard's data
+
+`GET /dashboard` returns everything the dashboard page shows, in one answer. The code is in `backend/dashboard.py`. The page itself is phase B8.
+
+| Part | What it holds | Where it comes from |
+| --- | --- | --- |
+| `cash.as_of` | The date of the books, which is "today" in the app | `backend.bank.db.today()` |
+| `cash.balance` | The bank balance | What `get_balance` returns |
+| `cash.receivables` | What customers owe, how much of it is overdue, by how late | What `get_receivables` returns |
+| `cash.upcoming_outflows` | The payments due in the next 30 days | What `get_upcoming_outflows` returns |
+| `forecast` | `available: true` and `result`, or `available: false` and a `reason` | What `forecast_cash` returns for 30 days |
+| `work.waiting` | Requests waiting for a Yes or No: the action, the sentence on its approval card, when it expires, which chat | The `confirmations` table |
+| `work.reminders`, `work.alerts`, `work.credit_request_drafts` | The 10 newest of each, newest first | The `outbox`, `alerts` and `credit_request_drafts` tables |
+| `work.plan` | The plan saved last, or `null` | The `plans` table |
+| `log.rows` | The 20 newest log rows, newest first | `registry.audit_log()` |
+| `log.check` | Whether the log is intact, and how many rows it holds | `registry.verify_log()` |
+
+Each list in `work` is an object with `items` and `not_listed`, the number of older entries left out.
+
+The rules it keeps:
+
+- **Same numbers as the chat.** Each figure comes from the Python function behind the action of the same name, and the endpoint does no arithmetic. For the lowest balance, read `forecast.result.likely.lowest_balance`, and the same under `cautious` and `worst`.
+- **It only reads.** Nothing is written to the database. It does not go through the registry either, so opening or refreshing the page adds no rows to the log.
+- **No AI model.** The answer arrives in a few hundredths of a second, plus the time the forecast takes.
+- **Without the forecast files** the `forecast` part says why, and the other three parts still arrive.
+- **Text the AI model wrote** (a reminder, a plan, an alert's note, the arguments of a call) is a plain string. A character that is invisible or reorders text is written out as a visible code, as on the approval card. Draw these as plain text in a box of their own, never through the Markdown renderer.
+- **No confirmation IDs.** A waiting request is listed without the ID that approves it. The owner answers it in the chat.
+
 ## Permissions and the log
 
 Everything the AI model asks for goes through `backend/actions/registry.py`. It decides by the action's level, never by what is written in the chat.

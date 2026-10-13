@@ -31,6 +31,14 @@ def connect(create: bool = False) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def has_table(conn: sqlite3.Connection, name: str) -> bool:
+    """For code that only reads. A table nothing was saved to yet does not
+    exist, and a reader must not be the one to make it."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
 def today() -> date:
     """The app's "today": the snapshot date of the books, never the system
     clock. Every business date in the app is measured from this."""

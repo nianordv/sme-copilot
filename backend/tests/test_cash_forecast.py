@@ -90,8 +90,19 @@ class CashForecastTests(BooksTestCase):
                           {'extra_outflows': [{'date': '2026-10-03', 'amount': 2, 'label': 'Old'}]},
                           {'extra_outflows': [{'date': '2026-10-05', 'amount': -2, 'label': 'Bad'}]},
                           {'assume_paid': {'unexpected': True}}):
-            with self.assertRaises(ValueError):
+            with self.assertRaises((ValueError, registry.ActionError)):
                 forecast_cash(**arguments)
+
+    def test_expense_outside_window_explains_required_days(self):
+        with self.assertRaisesRegex(registry.ActionError, 'needs 43 days'):
+            forecast_cash(days=30, extra_outflows=[
+                {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock order'}])
+        register_forecast_action()
+        result = registry.execute('forecast_cash', {'days': 30, 'extra_outflows': [
+            {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock order'}]}, 'window-check')
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('needs 43 days', result['message'])
+        self.assertEqual(registry.audit_log('window-check')[-1]['decision'], 'error')
 
     def test_stale_or_changed_forecast_is_rejected(self):
         self.forecast_metadata['snapshot_date'] = '2026-10-02'

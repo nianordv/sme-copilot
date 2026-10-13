@@ -254,6 +254,14 @@ def _cards(events: list[dict]) -> list[dict]:
 def _outcome(result: Any) -> str:
     if isinstance(result, dict):
         if result.get("status") == "ok":
+            details = result.get("result", {})
+            if isinstance(details, dict):
+                if details.get("saved_to_outbox") is True:
+                    return "Reminder saved to the outbox; nothing was sent externally."
+                if details.get("simulated") is True:
+                    return "Reminder simulated; nothing was sent externally."
+                if isinstance(details.get("message"), str):
+                    return details["message"]
             return APPROVED
         if result.get("status") == "refused":
             return str(result.get("reason"))

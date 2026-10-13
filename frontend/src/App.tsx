@@ -314,9 +314,13 @@ function App() {
       const data = await response.json()
       if (data.status === 'ok' && data.result && typeof data.result === 'object') {
         status = 'ok'
-        outcome = data.result.simulated === true
-          ? 'Reminder simulated; nothing was sent externally.'
-          : 'Approved action completed.'
+        outcome = data.result.saved_to_outbox === true
+          ? 'Reminder saved to the outbox; nothing was sent externally.'
+          : data.result.simulated === true
+            ? 'Reminder simulated; nothing was sent externally.'
+            : typeof data.result.message === 'string'
+              ? data.result.message
+              : 'Approved action completed.'
       } else if (data.status === 'refused' && typeof data.reason === 'string') {
         status = 'refused'
         outcome = data.reason

@@ -199,7 +199,8 @@ class ApprovalCaseTests(RunTestCase):
         self.assertTrue(record["passed"], record["reasons"])
         history = model.seen[-1]
         self.assertEqual([message["role"] for message in history], ["user", "assistant", "user"])
-        self.assertTrue(history[1]["content"].endswith("\nApproval result: Approved action completed."))
+        self.assertTrue(history[1]["content"].endswith(
+            "\nApproval result: Reminder saved to the outbox; nothing was sent externally."))
 
 
 class TrickCaseTests(RunTestCase):

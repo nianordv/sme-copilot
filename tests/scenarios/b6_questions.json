@@ -1,0 +1,152 @@
+[
+  {
+    "id": "b6-customer-correction",
+    "question": 2,
+    "title": "Correct the customer without restarting",
+    "values": {
+      "first_customer": {
+        "sql": "SELECT name FROM customers ORDER BY customer_id LIMIT 1"
+      },
+      "other_customer": {
+        "sql": "SELECT name FROM customers ORDER BY customer_id LIMIT 1 OFFSET 1"
+      },
+      "other_id": {
+        "sql": "SELECT customer_id FROM customers WHERE name = :other_customer"
+      },
+      "other_owed": {
+        "sql": "SELECT COALESCE(ROUND(SUM(amount), 2), 0) FROM invoices WHERE customer_id = :other_id AND paid_date IS NULL AND writeoff_date IS NULL"
+      }
+    },
+    "turns": [
+      {
+        "say": "How much does {first_customer} owe me?"
+      },
+      {
+        "say": "No, I meant {other_customer}. How much do they owe?"
+      }
+    ],
+    "must_call": [
+      {
+        "action": [
+          "get_customer",
+          "get_receivables"
+        ],
+        "arguments": {
+          "customer": "{other_customer}"
+        }
+      }
+    ],
+    "figures": [
+      "other_owed"
+    ]
+  },
+  {
+    "id": "b6-missing-purchase-date",
+    "question": 6,
+    "title": "Ask for a payment date instead of inventing it",
+    "turns": [
+      {
+        "say": "Can I afford an extra GEL 20,000 stock order next month? I haven't chosen the payment date."
+      }
+    ],
+    "must_not": [
+      {
+        "action": "forecast_cash"
+      }
+    ],
+    "must_say_any": [
+      "date",
+      "which day",
+      "when"
+    ]
+  },
+  {
+    "id": "b6-shortfall-to-options",
+    "question": 4,
+    "title": "Compare costs using the cautious forecast's gap",
+    "values": {
+      "expense_date": {
+        "sql": "SELECT date(:today, '+5 days')"
+      },
+      "gap": {
+        "action": "forecast_cash",
+        "arguments": {
+          "days": 30,
+          "extra_outflows": [
+            {
+              "date": "{expense_date}",
+              "amount": 600000,
+              "label": "Stock order"
+            }
+          ]
+        },
+        "path": "cautious.shortfall"
+      },
+      "duration": {
+        "action": "forecast_cash",
+        "arguments": {
+          "days": 30,
+          "extra_outflows": [
+            {
+              "date": "{expense_date}",
+              "amount": 600000,
+              "label": "Stock order"
+            }
+          ]
+        },
+        "path": "cautious.days_below_zero"
+      },
+      "overdraft_cost": {
+        "action": "compare_options",
+        "arguments": {
+          "amount": "{gap}",
+          "days": "{duration}"
+        },
+        "path": "options.option=overdraft.cost"
+      },
+      "loan_cost": {
+        "action": "compare_options",
+        "arguments": {
+          "amount": "{gap}",
+          "days": "{duration}"
+        },
+        "path": "options.option=term_loan.cost"
+      }
+    },
+    "turns": [
+      {
+        "say": "Forecast the next 30 days with an extra GEL 600,000 stock order paid on {expense_date}. If that causes a shortage, compare ways to cover the cautious shortfall and show their full costs."
+      }
+    ],
+    "must_call": [
+      {
+        "action": "forecast_cash",
+        "arguments": {
+          "days": 30,
+          "extra_outflows": [
+            {
+              "amount": 600000
+            }
+          ]
+        }
+      },
+      {
+        "action": "compare_options",
+        "arguments": {
+          "amount": "{gap}",
+          "days": "{duration}"
+        }
+      }
+    ],
+    "must_not": [
+      {
+        "action": "prepare_credit_request"
+      }
+    ],
+    "figures": [
+      "gap",
+      "overdraft_cost",
+      "loan_cost"
+    ]
+  }
+]

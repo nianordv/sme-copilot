@@ -415,7 +415,8 @@ def register_lookup_actions() -> None:
         description=(
             "Use when the owner asks what they have to pay soon. Returns the "
             "salaries, taxes and stock purchases due in the next days, with "
-            "dates, and their total."
+            "dates, and their total. This lists obligations only. For whether "
+            "the owner can afford them, use forecast_cash instead."
         ),
         parameters={
             "type": "object",

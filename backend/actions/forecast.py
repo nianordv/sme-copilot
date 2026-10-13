@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.actions.lookups import find_customer, no_single_customer
-from backend.actions.registry import Action, register
+from backend.actions.registry import Action, ActionError, register
 from backend.bank.db import connect
 from backend.forecast.cash import SIMULATIONS, SEED, calculate
 from backend.forecast.inputs import FORECAST, read_curves, future_sales
@@ -51,7 +51,11 @@ def forecast_cash(days=30, extra_outflows=None, assume_paid=None):
             (snapshot.isoformat(), last.isoformat()))]
         for item in extras:
             if not snapshot < item.date <= last:
-                raise ValueError('Extra outflow dates must be inside the forecast window.')
+                required_days = (item.date - snapshot).days
+                raise ActionError(
+                    f'The extra payment date {item.date} is outside the {days}-day forecast '
+                    f'from {snapshot}. A forecast through that date needs {required_days} days; '
+                    'the supported range is 1 to 60 days. Do not omit the extra payment.')
             payments.append({**item.model_dump(), 'category': 'what_if'})
         customer_ids = set()
         for name in assumed.customers:
@@ -87,14 +91,14 @@ def forecast_cash(days=30, extra_outflows=None, assume_paid=None):
 def register_forecast_action():
     register(Action(
         name='forecast_cash',
-        description='Forecast cash for the next 1 to 60 days (default 30). Use for payroll, taxes, cash shortages or what-if expenses. Returns likely, cautious and no-payment balances, shortfalls and weekly summaries. Future-invoice receipts are an explicit assumption. Ask which customer when the result has found=false.',
+        description='Use to answer whether the owner can pay salaries or taxes, afford an expense, or needs borrowing. Forecast cash for the next 1 to 60 days (default 30). Returns likely, cautious and no-payment balances, including balances after salaries and taxes in obligation_balances, shortfalls and weekly summaries. Use cautious.shortfall and cautious.days_below_zero for a follow-up compare_options call if there is a gap. Future-invoice receipts are an explicit assumption. Ask which customer when the result has found=false.',
         parameters={'type': 'object', 'properties': {
             'days': {'type': 'integer', 'minimum': 1, 'maximum': 60},
             'extra_outflows': {'type': 'array', 'items': {
                 'type': 'object', 'properties': {'date': {'type': 'string', 'format': 'date'},
                     'amount': {'type': 'number', 'minimum': 0}, 'label': {'type': 'string'}},
                 'required': ['date', 'amount', 'label'], 'additionalProperties': False}},
-            'assume_paid': {'type': 'object', 'properties': {
-                'customers': {'type': 'array', 'items': {'type': 'string'}},
+            'assume_paid': {'type': 'object', 'description': 'Required for a what-if where the owner says a customer has paid. For example {"customers": ["Racha Guesthouse"]}. Do not omit the payment assumption.', 'properties': {
+                'customers': {'type': 'array', 'description': 'Names or IDs of customers the owner says have paid all outstanding invoices.', 'items': {'type': 'string'}},
                 'invoices': {'type': 'array', 'items': {'type': 'string'}}}, 'additionalProperties': False},
         }, 'additionalProperties': False}, level='green', handler=forecast_cash))

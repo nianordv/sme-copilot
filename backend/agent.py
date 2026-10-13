@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 from backend.actions import registry
 from backend.llm import request_action_turn
@@ -16,6 +17,14 @@ ACTION_LABELS = {
     "forecast_cash": "Calculated the cash forecast",
     "get_receivables": "Looked up unpaid invoices",
     "send_reminder": "Payment reminder",
+    "get_customer": "Looked up the customer",
+    "get_balance": "Checked the bank balance",
+    "get_upcoming_outflows": "Checked upcoming payments",
+    "compare_options": "Compared the cost of funding options",
+    "draft_reminder": "Drafted a payment reminder",
+    "prepare_credit_request": "Credit request draft",
+    "save_plan": "Cash plan",
+    "set_alert": "Cash alert",
 }
 
 
@@ -48,17 +57,51 @@ def parse_call(call):
     return name, arguments
 
 
+def purchase_needs_date(messages):
+    """Don't let a vague next-month purchase become a dated forecast."""
+    text = messages[-1]['content'].lower()
+    purchase = any(word in text for word in ('stock order', 'purchase', 'buy ', 'extra expense'))
+    vague_date = 'next month' in text or "haven't chosen the payment date" in text
+    dated = re.search(r'\b\d{4}-\d{2}-\d{2}\b|\bon (?:the )?\d{1,2}(?:st|nd|rd|th)?\b', text)
+    # Only this clear missing-date case is handled here; other requests go to Bill.
+    return purchase and vague_date and not dated
+
+
 async def stream_agent(messages, session_id):
+    if purchase_needs_date(messages):
+        yield {"type": "chunk", "content": "What date will you pay for that purchase? I need it to include the expense in the cash forecast."}
+        yield {"type": "done"}
+        return
     conversation = [dict(message) for message in messages]
     tools = tool_catalog()
     calls_used = 0
+    forecast = None
+    compared_forecast = False
+    pending_call = None
+    window_corrected = False
+    request_text = messages[-1]['content'].lower()
+    wants_options = any(phrase in request_text for phrase in (
+        'options', 'ways to cover', 'should i borrow', 'need the overdraft', 'need an overdraft'))
 
     while True:
         check_context(conversation)
-        reply = await request_action_turn(conversation, tools)
+        if pending_call:
+            reply = {'tool_calls': [pending_call]}
+            pending_call = None
+        else:
+            reply = await request_action_turn(conversation, tools)
         calls = reply.get("tool_calls") or []
         if not isinstance(calls, list):
             raise ValueError("Invalid tool-call list.")
+        if not calls and forecast and wants_options and not compared_forecast:
+            cautious = forecast.get('cautious', {})
+            amount = cautious.get('shortfall', 0)
+            days = cautious.get('days_below_zero', 0)
+            if amount > 0 and days > 0:
+                # A requested comparison must use the calculated gap. This is
+                # still a Green registry call, counted against the same limit.
+                calls = [{'function': {'name': 'compare_options',
+                          'arguments': {'amount': amount, 'days': days}}}]
         if not calls:
             # This round already contains the answer. Do not generate it again.
             content = reply.get("content")
@@ -77,6 +120,22 @@ async def stream_agent(messages, session_id):
             calls_used += 1
             result = registry.execute(name, arguments, session_id)
             status = result["status"]
+            if status == 'ok' and name == 'forecast_cash':
+                forecast = result['result']
+                compared_forecast = False
+            elif name == 'compare_options':
+                # Do not retry an error or refusal automatically.
+                compared_forecast = True
+            if name == 'forecast_cash' and status == 'error' and not window_corrected \
+                    and 'through' in request_text:
+                needed = re.search(r'A forecast through that date needs (\d+) days;',
+                                   result.get('message', ''))
+                if needed and 1 <= int(needed[1]) <= 60:
+                    # The owner requested coverage through this date. Repair
+                    # only the window of this read-only call, once.
+                    pending_call = {'function': {'name': name, 'arguments':
+                                    {**arguments, 'days': int(needed[1])}}}
+                    window_corrected = True
             label = ACTION_LABELS.get(name, name.replace("_", " ").capitalize())
             if status != "ok":
                 label = f"{name.replace('_', ' ')}: {status.replace('_', ' ')}"

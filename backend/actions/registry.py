@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS confirmations (
 
 
 class ActionError(Exception):
-    """Raise from a prepare step when a request cannot go ahead for a reason
+    """Raise from a prepare step or handler when a request cannot go ahead for a reason
     the model should pass on, such as a customer who is not found. The message
     is returned as an "error" and shown on the screen as a step, so write it in
     our own words and do not repeat text the model sent."""
@@ -479,6 +479,10 @@ def _run(conn, action, arguments, session_id, confirmation_id=None) -> dict:
             raise TypeError("An action must return a dictionary.")
         json.dumps(result, allow_nan=False)
         reply = {"status": "ok", "result": result}
+    except ActionError as stop:
+        # Deliberate validation messages written by our action code are safe
+        # to explain. Unexpected exceptions still use the generic error below.
+        reply = _error(_shorten(_escaped(_text(stop)), RESULT_LIMIT))
     except Exception as problem:
         # Avoid exposing internal exception details to the model/client.
         _report(action.name, problem)

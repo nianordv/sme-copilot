@@ -160,9 +160,13 @@
     "id": "q6-stock-order",
     "question": 6,
     "title": "Can I afford a GEL 20,000 stock order next month?",
-    "note": "Passes when the forecast is run with the order as an extra payment of 20,000. Which figures the answer must give is for the answer key to add.",
+    "note": "Bill asks for the missing payment date. The second turn supplies it; the forecast must then include the extra expense.",
+    "values": {
+      "purchase_date": {"sql": "SELECT date(:today, 'start of month', '+1 month', '+14 days')"}
+    },
     "turns": [
-      {"say": "Can I afford a GEL 20,000 stock order next month?"}
+      {"say": "Can I afford a GEL 20,000 stock order next month?"},
+      {"say": "The stock order will be paid on {purchase_date}. Include it in the forecast through that date."}
     ],
     "must_call": [
       {"action": "forecast_cash", "arguments": {"extra_outflows": [{"amount": 20000}]}}

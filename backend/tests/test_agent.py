@@ -18,6 +18,52 @@ def final_reply():
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forecast_window_is_repaired_once_from_server_error(self):
+        call = tool_reply('forecast_cash', {'days': 30, 'extra_outflows': [
+            {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock'}]})
+        error = {'status': 'error', 'message': 'A forecast through that date needs 43 days; the supported range is 1 to 60 days.'}
+        with patch.object(agent, 'request_action_turn', AsyncMock(side_effect=[call, final_reply()])), \
+             patch.object(registry, 'execute', side_effect=[error, {'status': 'ok', 'result': {}}]) as execute:
+            _ = [event async for event in agent.stream_agent(
+                [{'role': 'user', 'content': 'Include the purchase in the forecast through that date.'}], 'owner')]
+        repaired = execute.call_args_list[1].args[1]
+        self.assertEqual(repaired['days'], 43)
+        self.assertEqual(repaired['extra_outflows'], call['tool_calls'][0]['function']['arguments']['extra_outflows'])
+
+    async def test_requested_options_follow_the_calculated_gap(self):
+        request = AsyncMock(side_effect=[tool_reply('forecast_cash'), final_reply(), final_reply()])
+        forecast = {'status': 'ok', 'result': {'cautious': {'shortfall': 8000, 'days_below_zero': 21}}}
+        with patch.object(agent, 'request_action_turn', request), \
+             patch.object(registry, 'execute', side_effect=[forecast, {'status': 'ok', 'result': {}}]) as execute:
+            events = [event async for event in agent.stream_agent(
+                [{'role': 'user', 'content': "I'm short. What are my options?"}], 'owner')]
+        self.assertEqual(execute.call_args_list[1].args,
+                         ('compare_options', {'amount': 8000, 'days': 21}, 'owner'))
+        self.assertEqual(events[-1]['type'], 'done')
+
+    async def test_positive_forecast_does_not_trigger_borrowing_comparison(self):
+        request = AsyncMock(side_effect=[tool_reply('forecast_cash'), final_reply()])
+        with patch.object(agent, 'request_action_turn', request), \
+             patch.object(registry, 'execute', return_value={
+                 'status': 'ok', 'result': {'cautious': {'shortfall': 0, 'days_below_zero': 0}}}) as execute:
+            _ = [event async for event in agent.stream_agent(
+                [{'role': 'user', 'content': "I'm short. What are my options?"}], 'owner')]
+        self.assertEqual(execute.call_count, 1)
+
+    async def test_undated_next_month_purchase_asks_before_running(self):
+        with patch.object(agent, 'request_action_turn', AsyncMock()) as model, \
+             patch.object(registry, 'execute') as execute:
+            events = [event async for event in agent.stream_agent(
+                [{'role': 'user', 'content': 'Can I afford a GEL 20,000 stock order next month?'}], 'owner')]
+        self.assertIn('What date', events[0]['content'])
+        self.assertEqual(events[-1]['type'], 'done')
+        model.assert_not_called()
+        execute.assert_not_called()
+
+    def test_dated_purchase_still_goes_to_model(self):
+        self.assertFalse(agent.purchase_needs_date([
+            {'content': 'Can I afford a stock order next month, paid on 2026-11-01?'}]))
+
     def test_no_argument_tool_has_explicit_instruction(self):
         action = {"name": "get_receivables", "description": "Demo lookup",
                   "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}

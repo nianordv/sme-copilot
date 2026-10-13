@@ -20,7 +20,7 @@ from typing import Any
 
 from backend.bank.db import connect, today
 
-from .lookups import TOP_ROWS, find_customer, money, no_single_customer, open_invoices
+from .lookups import TOP_ROWS, find_customer, gel, money, no_single_customer, open_invoices
 from .registry import Action, ActionError, quoted, register
 
 CANDIDATES_NAMED = 5
@@ -34,10 +34,6 @@ CREATE TABLE IF NOT EXISTS outbox (
     text TEXT NOT NULL
 );
 """
-
-
-def gel(amount: float) -> str:
-    return f"GEL {amount:,.2f}"
 
 
 def reminder_draft(conn: sqlite3.Connection, customer: sqlite3.Row, as_of: date) -> dict[str, Any] | None:

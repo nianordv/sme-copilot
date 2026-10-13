@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from backend.actions.lookups import register_lookup_actions
 from backend.actions.owner_only import register_owner_only_actions
+from backend.actions.planning import register_planning_actions
 from backend.actions.reminders import register_reminder_actions
 from backend.actions import registry
 from backend.agent import stream_agent
@@ -19,6 +20,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 register_lookup_actions()
 register_owner_only_actions()
 register_reminder_actions()
+register_planning_actions()
 
 
 class ChatMessage(BaseModel):

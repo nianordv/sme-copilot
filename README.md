@@ -75,6 +75,21 @@ Run the command again whenever the CSV or `company.json` changes. It rebuilds th
 
 "Today" in the app is the last day of the books, 3 Oct 2026, not the day you run it. `backend.bank.db.today()` returns it.
 
+## What Bill can do
+
+| Action | Level | What it does |
+| --- | --- | --- |
+| `get_receivables`, `get_customer`, `get_balance`, `get_upcoming_outflows` | Green | Look things up in the books. |
+| `draft_reminder` | Green | Writes a payment reminder for one customer from a fixed template. Sends nothing. |
+| `send_reminder` | Yellow | Saves the reminder the owner approved to the `outbox` table. |
+| `set_alert` | Yellow | Stores an alert for a date, or for the bank balance falling below an amount, in the `alerts` table. |
+| `save_plan` | Yellow | Stores a plan the owner agreed to in the `plans` table. |
+| `transfer_money`, `take_loan`, `repay_loan`, `submit_credit_request` | Red | Always refused and logged. |
+
+Nothing leaves the database. A "sent" reminder is a row in `outbox`, and nothing watches the alerts or sends a notification. Rebuilding the books leaves these tables alone.
+
+Still to come in phase A4: `compare_options` and `prepare_credit_request`.
+
 ## Permissions and the log
 
 Everything the AI model asks for goes through `backend/actions/registry.py`. It decides by the action's level, never by what is written in the chat.
@@ -94,6 +109,8 @@ python -c "from backend.actions.registry import verify_log; print(verify_log())"
 ```
 
 `registry.audit_log(session_id)` returns the rows themselves. Nothing checks who is calling the server, so "one chat" is not "one person".
+
+A Yellow action can have a `prepare` step. It runs before the owner is asked and pins the request down: a customer's name becomes the one ID it points to, a date becomes a real date, a standard text is written in. What it returns is what is stored, shown to the owner, logged and run. It raises `registry.ActionError` to turn down a request that cannot go ahead, such as a reminder for a customer with nothing overdue, so the owner is never shown a card for it. A `prepare` step must only read.
 
 Text from the AI model is treated as data, never as layout. On the approval card a name appears on one line in quotation marks, and a message has `>` in front of every line, so neither can pass for the app's own words. A character that is invisible or reorders text is written out as a visible code, on the card and in the log. When you add a Yellow action, build its sentence with `registry.one_line()` for short values and `registry.quoted()` for longer text. Text the app takes from its own database needs neither.
 

@@ -431,3 +431,42 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.header-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.sign-in-card {
+  width: min(420px, 100%);
+  margin: max(32px, 12vh) auto;
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 12px 40px rgb(22 59 92 / 6%);
+}
+.sign-in-card h1 { color: var(--user-bubble); margin-bottom: 8px; }
+.sign-in-card > p { color: var(--text-secondary); line-height: 1.5; }
+.pin-form { display: grid; gap: 12px; margin: 20px 0; }
+.pin-form label { display: grid; gap: 8px; font-weight: 600; }
+.pin-form input {
+  width: 100%; box-sizing: border-box; padding: 12px;
+  font: inherit; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+}
+.pin-form button, .sign-in-card > button, .unlock-notice > button {
+  padding: 10px 16px; border: 0; border-radius: 8px;
+  background: var(--accent); color: white; font: inherit; cursor: pointer;
+}
+.pin-form button:disabled { opacity: .6; cursor: not-allowed; }
+.pin-form [role="alert"] { color: #9a3412; margin: 0; line-height: 1.5; }
+.pin-form input:focus-visible, .pin-form button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.unlock-notice {
+  max-height: 35vh; overflow-y: auto; flex-shrink: 0;
+  margin: 8px 24px; padding: 12px 16px;
+  border: 1px solid #d97706; border-radius: 10px; background: #fffbeb;
+}
+.unlock-notice p { margin: 0; }
+@media (max-width: 600px) {
+  .chat-header { flex-wrap: wrap; }
+  .sign-in-card { width: calc(100% - 32px); box-sizing: border-box; padding: 24px; }
+}

@@ -97,9 +97,10 @@ class CashForecastTests(BooksTestCase):
         with self.assertRaisesRegex(registry.ActionError, 'needs 43 days'):
             forecast_cash(days=30, extra_outflows=[
                 {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock order'}])
-        register_forecast_action()
-        result = registry.execute('forecast_cash', {'days': 30, 'extra_outflows': [
-            {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock order'}]}, 'window-check')
+        with patch.dict(registry._actions, {}, clear=True):
+            register_forecast_action()
+            result = registry.execute('forecast_cash', {'days': 30, 'extra_outflows': [
+                {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock order'}]}, 'window-check')
         self.assertEqual(result['status'], 'error')
         self.assertIn('needs 43 days', result['message'])
         self.assertEqual(registry.audit_log('window-check')[-1]['decision'], 'error')

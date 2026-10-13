@@ -9,15 +9,76 @@ import {
   subscribeToStorage,
 } from './chatStorage'
 import type { Message } from './chatStorage'
+import { ApiError, apiRequest } from './api'
+import PinForm from './PinForm'
 import './App.css'
 
 function App() {
+  const [signedIn, setSignedIn] = useState<boolean | null>(null)
+  const [connectionError, setConnectionError] = useState('')
+  const [checkAttempt, setCheckAttempt] = useState(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    async function checkOwner() {
+      try {
+        const response = await apiRequest('/me', { signal: controller.signal })
+        const data = await response.json()
+        if (typeof data.signed_in !== 'boolean') throw new Error('Invalid sign-in response.')
+        if (!controller.signal.aborted) setSignedIn(data.signed_in)
+      } catch (problem) {
+        if (!controller.signal.aborted) {
+          if (problem instanceof ApiError && problem.status === 401) setSignedIn(false)
+          else setConnectionError(problem instanceof Error ? problem.message : 'Cannot reach the server.')
+        }
+      }
+    }
+    void checkOwner()
+    return () => controller.abort()
+  }, [checkAttempt])
+
+  async function signIn(pin: string) {
+    const response = await apiRequest('/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    })
+    const data = await response.json()
+    if (data.signed_in !== true) throw new Error('Sign-in was not completed.')
+    setSignedIn(true)
+  }
+
+  if (signedIn === true) return <ChatApp onSignedOut={() => setSignedIn(false)} />
+
+  return (
+    <main className="sign-in-card">
+      <img src="/billboard-logo.png" alt="" width="64" height="64" />
+      <h1>BillBoard</h1>
+      <p>Sign in to your business cash assistant.</p>
+      {signedIn === false ? (
+        <PinForm label="Owner PIN" submitLabel="Sign in" onSubmit={signIn} />
+      ) : connectionError ? (
+        <>
+          <p role="alert">{connectionError}</p>
+          <button type="button" onClick={() => {
+            setConnectionError('')
+            setCheckAttempt((attempt) => attempt + 1)
+          }}>Try again</button>
+        </>
+      ) : <p role="status">Checking sign-in…</p>}
+    </main>
+  )
+}
+
+function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
   const [chatStore, setChatStore] = useState(loadChatStore)
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isConfirming, setIsConfirming] = useState(false)
   const submittedConfirmations = useRef(new Set<string>())
-  const isBusy = isSending || isConfirming
+  const [isUnlocking, setIsUnlocking] = useState(false)
+  const [showUnlock, setShowUnlock] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
+  const isBusy = isSending || isConfirming || isUnlocking || isSigningOut
   const [error, setError] = useState<string | null>(null)
   const storageError = useSyncExternalStore(
     subscribeToStorage,
@@ -29,6 +90,60 @@ function App() {
   )!
 
   const messages = activeChat.messages
+  const lockEvent = messages.flatMap((message) => [
+    ...(message.actions ?? []).filter((step) =>
+      (step.name === 'unlock' && step.status === 'ok') || /session is locked/i.test(step.label)),
+    ...(/session is locked/i.test(message.content)
+      ? [{ name: 'lock', status: 'locked', label: message.content }] : []),
+  ]).at(-1)
+  const isLocked = !!lockEvent && lockEvent.name !== 'unlock'
+
+  function ownerRequest(path: string, options: RequestInit = {}) {
+    return apiRequest(path, options, onSignedOut)
+  }
+
+  async function signOut() {
+    if (isBusy) return
+    setIsSigningOut(true)
+    try {
+      await ownerRequest('/logout', { method: 'POST' })
+      saveChatStore(chatStore)
+      onSignedOut()
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : 'Unable to sign out.')
+    } finally {
+      setIsSigningOut(false)
+    }
+  }
+
+  async function unlock(pin: string) {
+    setIsUnlocking(true)
+    try {
+      const response = await ownerRequest('/unlock', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: activeChat.id, pin }),
+      })
+      const data = await response.json()
+      if (data.status !== 'ok') throw new Error(data.message ?? data.reason ?? 'The chat could not be unlocked.')
+      setMessages((previous) => [...previous, {
+        id: crypto.randomUUID(), role: 'assistant',
+        content: 'This chat is unlocked. The action permission rules still apply.',
+        actions: [{ name: 'unlock', status: 'ok', label: 'Chat unlocked after PIN verification.' }],
+      }])
+      setShowUnlock(false)
+    } catch (problem) {
+      if (!(problem instanceof ApiError && problem.status === 401)) {
+        const detail = problem instanceof Error ? problem.message : 'Unable to unlock the chat.'
+        setMessages((previous) => [...previous, {
+          id: crypto.randomUUID(), role: 'assistant', content: 'Unlock was not completed.',
+          actions: [{ name: 'unlock', status: 'error', label: detail }],
+        }])
+      }
+      throw problem
+    } finally {
+      setIsUnlocking(false)
+    }
+  }
 
   function setMessages(update: SetStateAction<Message[]>) {
     const chatId = activeChat.id
@@ -74,13 +189,14 @@ function App() {
 
     setInput('')
     setError(null)
+    setShowUnlock(false)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     const content = input.trim()
-    if (!content || isBusy) return
+    if (!content || isBusy || showUnlock) return
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -118,7 +234,7 @@ function App() {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
     try {
-      const response = await fetch('/api/chat/stream', {
+      const response = await ownerRequest('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history, session_id: activeChat.id }),
@@ -286,6 +402,7 @@ function App() {
 
     setInput('')
     setError(null)
+    setShowUnlock(false)
   }
 
   async function handleConfirmation(message: Message, approved: boolean) {
@@ -299,9 +416,10 @@ function App() {
     setError(null)
     let outcome = 'Approval response was lost. The action may have run; do not retry it automatically.'
     let status = 'unknown'
+    let signedOut = false
 
     try {
-      const response = await fetch('/api/confirm', {
+      const response = await ownerRequest('/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -331,11 +449,13 @@ function App() {
         throw new Error('Invalid approval response.')
       }
     } catch (error) {
+      signedOut = error instanceof ApiError && error.status === 401
+      if (signedOut) submittedConfirmations.current.delete(confirmation.confirmationId)
       setError(error instanceof Error ? error.message : 'Unable to confirm the action.')
     } finally {
       const finalOutcome = outcome
       const finalStatus = status
-      setMessages((previous) => previous.map((item) => item.id === message.id
+      if (!signedOut) setMessages((previous) => previous.map((item) => item.id === message.id
         ? { ...item, confirmation: { ...confirmation, outcome: finalOutcome },
           actions: [...(item.actions ?? []), { name: 'confirmation', status: finalStatus, label: finalOutcome }] }
         : item))
@@ -379,6 +499,10 @@ function App() {
           </div>
         </div>
 
+        <div className="header-controls">
+        <button type="button" className="new-chat-button" onClick={signOut} disabled={isBusy}>
+          {isSigningOut ? 'Signing out…' : 'Sign out'}
+        </button>
         <button
           type="button"
           className="new-chat-button"
@@ -387,6 +511,7 @@ function App() {
         >
           New chat
         </button>
+        </div>
       </header>
 
       <div className="connection-notice">
@@ -446,6 +571,17 @@ function App() {
         ))}
       </section>
 
+      {isLocked && (
+        <section className="unlock-notice" aria-label="Unlock this chat">
+          <p>This chat is locked. Verify your PIN to unlock it.</p>
+          {showUnlock ? (
+            <>
+              <PinForm key={activeChat.id} label="Owner PIN" submitLabel="Unlock chat" onSubmit={unlock} />
+              <button type="button" disabled={isUnlocking} onClick={() => setShowUnlock(false)}>Cancel</button>
+            </>
+          ) : <button type="button" disabled={isBusy} onClick={() => setShowUnlock(true)}>Unlock</button>}
+        </section>
+      )}
       {isSending && <p role="status">Bill is working…</p>}
       {isConfirming && <p role="status">Recording your decision…</p>}
       {error && <p role="alert">{error}</p>}
@@ -462,12 +598,12 @@ function App() {
             placeholder="Type a message…"
             maxLength={4000}
             autoComplete="off"
-            disabled={isBusy}
+            disabled={isBusy || showUnlock}
           />
 
           <button
             type="submit"
-            disabled={isBusy || !input.trim()}
+            disabled={isBusy || showUnlock || !input.trim()}
           >
             {isSending ? 'Waiting…' : 'Send'}
           </button>

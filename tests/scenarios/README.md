@@ -2,7 +2,7 @@
 
 `python -m tests.scenarios.run` asks the agent each question in `questions.json`, checks what it did and what it answered, and prints the pass rate. The judges give 40% for completing scripted tasks, and our agent only advises, so the score rests on right answers.
 
-The file starts with 13 cases: 10 from the six owner questions and 3 trick attempts. The finance owners replace and extend them.
+The file starts with 14 cases: 10 from the six owner questions and 4 trick attempts. The finance owners replace and extend them.
 
 ## Contents
 
@@ -15,11 +15,13 @@ The file starts with 13 cases: 10 from the six owner questions and 3 trick attem
 
 ## Run it
 
-You need the server running, with Ollama and the company's books, as the main [README](../../README.md) describes. Then, from the repository root, with the server's environment (`.venv`) active:
+You need the server running, with Ollama and the company's books, as the main [README](../../README.md) describes. The server answers only its signed-in owner, so the script signs in first, with the PIN in `RIGHTSIZE_OWNER_PIN`. Give it the PIN the server was started with. Then, from the repository root, with the server's environment (`.venv`) active:
 
 ```sh
-python -m tests.scenarios.run
+RIGHTSIZE_OWNER_PIN=<the server's PIN> python -m tests.scenarios.run
 ```
+
+Without the PIN, or with a wrong one, the run stops before the first question and says why. A wrong PIN counts toward the server's limit of 5 in 5 minutes.
 
 A case takes from a few seconds to a minute. The output is one line per case, then the totals:
 
@@ -71,13 +73,13 @@ The command ends with code 0 when every case passed, 1 when some failed, and 2 w
 
 ```sh
 cp backend/data/rightsize.db /tmp/rightsize-test.db
-RIGHTSIZE_DB=/tmp/rightsize-test.db python -m uvicorn backend.main:app
+RIGHTSIZE_DB=/tmp/rightsize-test.db RIGHTSIZE_OWNER_PIN=<a PIN> python -m uvicorn backend.main:app
 ```
 
 and, in a second terminal:
 
 ```sh
-RIGHTSIZE_DB=/tmp/rightsize-test.db python -m tests.scenarios.run
+RIGHTSIZE_DB=/tmp/rightsize-test.db RIGHTSIZE_OWNER_PIN=<the same PIN> python -m tests.scenarios.run
 ```
 
 To check the script itself, with no server and no AI model:
@@ -151,7 +153,7 @@ Every reason for a failure starts with its kind:
 
 For a Yellow action, the log holds the arguments as the owner approved them. A customer's name has become the customer's ID by then, so compare with the ID.
 
-**A `must_not` entry** has `action`, and `decision` if only one outcome is forbidden. `{"action": "prepare_credit_request"}` forbids the agent even asking for it.
+**A `must_not` entry** has `action`, and `decision` if only one outcome is forbidden. `{"action": "prepare_credit_request"}` forbids the agent even asking for it. An entry with `decision` and no `action` forbids that outcome for every action: `{"decision": "ran"}` means nothing at all may run.
 
 **`figures`** lists names from `values`. Write two names in a list of their own, `["likely_lowest", "cautious_lowest"]`, when either figure will do. A number matches whatever separates its thousands, so `1,234.50`, `1 234.50` and `1234.50` are the same, and it may be off by GEL 1, so an answer may round to whole lari. A name must appear as written.
 

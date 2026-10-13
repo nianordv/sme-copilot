@@ -2,7 +2,8 @@ import json
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -15,8 +16,12 @@ from backend.actions.planning import register_planning_actions
 from backend.actions.reminders import register_reminder_actions
 from backend.actions import registry
 from backend.agent import stream_agent
+from backend import auth
 
-app = FastAPI(title="BillBoard API")
+# Both checks are set on the whole app, so they hold for every endpoint below
+# and for any added later. Only /health, /login and /me answer without a sign-in.
+app = FastAPI(title="BillBoard API",
+              dependencies=[Depends(auth.same_origin), Depends(auth.require_owner)])
 # Answer only under a local name, so a website cannot reach the API under its own (DNS rebinding).
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 register_lookup_actions()
@@ -25,6 +30,8 @@ register_owner_only_actions()
 register_reminder_actions()
 register_planning_actions()
 register_borrowing_actions()
+app.include_router(auth.router)
+app.add_exception_handler(RequestValidationError, auth.invalid_request)
 
 
 class ChatMessage(BaseModel):

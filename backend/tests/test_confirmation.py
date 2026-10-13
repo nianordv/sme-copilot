@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend import agent
 from backend.main import app
 from backend.actions import registry
-from backend.tests.helpers import use_temporary_database
+from backend.tests.helpers import sign_in_as_owner, use_temporary_database
 
 
 class ConfirmationTests(unittest.TestCase):
@@ -28,6 +28,7 @@ class ConfirmationTests(unittest.TestCase):
             "send_reminder", "Test reminder", {"type": "object"}, "yellow", reminder))
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         self.addCleanup(self.client.close)
+        sign_in_as_owner(self, self.client)
 
     def request(self):
         result = registry.execute("send_reminder", {"customer": "Demo Cafe", "text": "Please pay."}, "owner")

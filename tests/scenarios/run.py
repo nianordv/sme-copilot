@@ -12,8 +12,11 @@ Expected figures are worked out when the script runs, by a query on the books
 or by calling a green action, so the cases survive the data being regenerated.
 
 The script and the server must use the same database: start both with the
-same RIGHTSIZE_DB, or with none. The run prints a table and the pass rate and
-saves everything it saw to a dated file in tests/scenarios/results.
+same RIGHTSIZE_DB, or with none. The server answers only its signed-in owner,
+so the script signs in once before the first case, with the PIN in
+RIGHTSIZE_OWNER_PIN: start it with the same PIN as the server. The run prints
+a table and the pass rate and saves everything it saw to a dated file in
+tests/scenarios/results.
 
 Exit code: 0 when every case passed, 1 when some failed, 2 when the run could
 not start. README.md next to this file describes the format of the cases.
@@ -23,6 +26,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -35,6 +39,7 @@ from typing import Any, Callable
 import httpx
 
 from backend.actions import registry
+from backend.auth import PIN_VARIABLE
 from backend.bank.db import db_path, today
 
 from . import checks
@@ -111,10 +116,13 @@ def problems_in(cases: Any) -> list[str]:
                 problems.append(f"{where}: value \"{value}\" needs \"sql\" or \"action\", one of the two.")
             elif "action" in source and not isinstance(source.get("path"), str):
                 problems.append(f"{where}: value \"{value}\" needs a \"path\" into the action's result.")
-        for key in ("must_call", "must_not"):
-            for entry in case.get(key, []):
-                if not isinstance(entry, dict) or "action" not in entry:
-                    problems.append(f"{where}: every \"{key}\" entry names an \"action\".")
+        for entry in case.get("must_call", []):
+            if not isinstance(entry, dict) or "action" not in entry:
+                problems.append(f"{where}: every \"must_call\" entry names an \"action\".")
+        for entry in case.get("must_not", []):
+            if not isinstance(entry, dict) or not ("action" in entry or "decision" in entry):
+                problems.append(f"{where}: every \"must_not\" entry names an \"action\", "
+                                "a \"decision\", or both.")
         for entry in case.get("figures", []):
             for figure in entry if isinstance(entry, list) else [entry]:
                 if figure not in values:
@@ -268,6 +276,24 @@ def _outcome(result: Any) -> str:
         if result.get("status") == "error":
             return f"{result.get('message')}{UNAVAILABLE}"
     return "Approval response was lost."
+
+
+def sign_in(client: httpx.Client) -> str | None:
+    """Sign in as the owner, with the PIN the script was started with. The
+    client keeps the cookie, so every later request is the owner's. Returns
+    what went wrong, in words, or None when the script is signed in."""
+    pin = os.environ.get(PIN_VARIABLE, "")
+    if not pin:
+        return (f"{PIN_VARIABLE} is not set. The script signs in as the owner: "
+                "start it with the same PIN as the server.")
+    try:
+        response = client.post("/login", json={"pin": pin})
+        said = response.json().get("detail") if response.status_code != 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError) as problem:
+        return f"The sign-in got no usable answer ({type(problem).__name__})."
+    if response.status_code != 200:
+        return f"The server did not sign the script in (status {response.status_code}): {said}"
+    return None
 
 
 def warm_up(client: httpx.Client, stamp: str) -> dict:
@@ -424,6 +450,10 @@ def main(arguments: list[str] | None = None) -> int:
         except httpx.HTTPError:
             print(f"No server answers at {options.server}. Start it with: "
                   "python -m uvicorn backend.main:app", file=sys.stderr)
+            return 2
+        refused = sign_in(client)
+        if refused:
+            print(refused, file=sys.stderr)
             return 2
 
         print(f"Running {len(cases)} cases against {options.server}. Each takes up to a few minutes.")

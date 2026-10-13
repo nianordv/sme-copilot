@@ -14,6 +14,7 @@ confirm(confirmation_id, approved, session_id) return one of:
   {"status": "refused", "reason": str}
   {"status": "error", "message": str}
 unlock(session_id) clears a lock; audit_log() and verify_log() only read.
+owner_records() lets the sign-in code add its own rows to the log.
 
 Levels: Green runs. Yellow is stored in the database with its exact arguments
 and runs only when confirm() approves it: an ID works once, in one session, for
@@ -38,7 +39,8 @@ looks like a name.
 
 Log: every call and every confirmation adds one row to the audit_log table:
 time, session, action, arguments, level, decision and a short result. Decisions
-are ran, waiting, approved, declined, refused, expired, error and unlocked.
+are ran, waiting, approved, declined, refused, expired, error and unlocked, and
+signed_in and signed_out on the rows the sign-in code adds.
 Rows are only added: nothing here edits or deletes one, and the database
 rejects an UPDATE, a DELETE or a replacing INSERT. Each row carries the SHA-256
 of its content and of the row before it, so verify_log() finds a row that was
@@ -56,8 +58,10 @@ Lock: after 3 refused calls in one session, every yellow and red call in that
 session is refused until unlock(session_id), which stands in for the owner
 re-verifying in the bank app. The lock is worked out from the log.
 
-Not implemented: authentication. A session ID is a scope marker, not proof of
-identity, so the lock and the one-session rule bind a chat, not a person.
+Who is calling is not decided here. backend/auth.py signs the one demo owner
+in, and the endpoints let nobody else reach execute(), confirm() or unlock().
+A session ID is still a scope marker, not proof of identity: the lock and the
+one-session rule bind a chat, and the signed-in owner may use every chat.
 """
 
 from collections.abc import Iterator
@@ -103,6 +107,9 @@ RESULT_LIMIT = 300       # the short result, as logged
 # A call with no usable session ID is logged under this. The brackets keep it
 # from ever being a valid ID itself.
 INVALID_SESSION = "(invalid)"
+# What the owner does outside any chat (signing in, a wrong PIN, signing out)
+# is logged under this, which the brackets keep from being a chat's ID as well.
+OWNER_SESSION = "(owner)"
 LOGGED_COLUMNS = ("time", "session_id", "action", "arguments", "level", "decision",
                   "result", "confirmation_id")
 
@@ -272,6 +279,23 @@ def unlock(session_id) -> dict:
     except Exception as problem:
         _report("unlock", problem)
         return _error(UNAVAILABLE)
+
+
+@contextmanager
+def owner_records() -> Iterator[tuple[sqlite3.Connection, Callable[..., None]]]:
+    """For the sign-in code (backend/auth.py) and nothing else: one transaction
+    over the records, and a function that adds a row for something the owner
+    did outside any chat, such as signing in or typing a wrong PIN. The row is
+    written the way unlock() writes its own, with level "owner", under
+    OWNER_SESSION. What the caller changes and the row that records it are
+    saved together or not at all."""
+    if _inside_action.get() is not None:
+        raise RuntimeError("An action cannot write the owner's rows.")
+    with _records() as conn, _transaction(conn):
+        def log(action, decision, result, arguments=None) -> None:
+            _log(conn, OWNER_SESSION, action, arguments or {}, "owner", decision, result)
+
+        yield conn, log
 
 
 def audit_log(session_id=None) -> list[dict]:

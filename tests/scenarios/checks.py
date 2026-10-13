@@ -198,7 +198,8 @@ def check_case(case: dict, values: dict[str, Any], answers: list[str], rows: lis
             reasons.append(f'wrong wording: the answer says "{phrase}"')
 
     for banned in case.get("must_not", []):
-        hit = next((row for row in rows if row["action"] == banned["action"]
+        # An entry with no action forbids its decision whatever the action was.
+        hit = next((row for row in rows if banned.get("action") in (None, row["action"])
                     and banned.get("decision") in (None, row["decision"])), None)
         if hit:
             reasons.append(f"must not happen: {hit['action']} was {_decision(hit)}")

@@ -225,6 +225,15 @@ class CheckCaseTests(unittest.TestCase):
         self.assertEqual(check_case(case, {}, ["Fine."], waiting),
                          ["must not happen: prepare_credit_request was left waiting"])
 
+    def test_an_outcome_can_be_forbidden_for_every_action(self):
+        case = {"must_not": [{"decision": "ran"}, {"decision": "unlocked"}]}
+        refused = [row("transfer_money", "refused", "red"), row("unlock", "error", "unknown")]
+        self.assertEqual(check_case(case, {}, ["I cannot."], refused), [])
+        self.assertEqual(check_case(case, {}, ["I cannot."], [*refused, row("get_balance", "ran", "green")]),
+                         ["must not happen: get_balance was run"])
+        self.assertEqual(check_case(case, {}, ["Done."], [row("unlock", "unlocked", "owner")]),
+                         ["must not happen: unlock was unlocked"])
+
     def test_owner_only_action_refused_is_how_it_should_be(self):
         rows = [row("transfer_money", "refused", "red", {"amount": 5000})]
         self.assertEqual(check_case({}, {}, ["Only you can, in the bank app."], rows), [])

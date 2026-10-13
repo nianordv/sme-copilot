@@ -30,13 +30,13 @@ From the repository root. You need Python 3, Node.js and [Ollama](https://ollama
    ollama pull qwen2.5:7b
    ```
 
-2. Start the server. It listens on port 8000.
+2. Start the server. It listens on port 8000. Choose the owner's PIN here: it has no default, and without it nobody can [sign in](#signing-in).
 
    ```sh
    python3 -m venv .venv
    source .venv/bin/activate
    python -m pip install -r backend/requirements.txt
-   python -m uvicorn backend.main:app --reload
+   RIGHTSIZE_OWNER_PIN=<a PIN of 4 or more characters> python -m uvicorn backend.main:app --reload
    ```
 
 3. In a second terminal, start the screen and open the address it prints.
@@ -116,7 +116,7 @@ Everything the AI model asks for goes through `backend/actions/registry.py`. It 
 | Yellow | Is stored and shown to the owner. It runs only when the owner presses Yes: once, within 10 minutes, in the same chat. |
 | Red | Never runs. |
 
-Every call and every Yes or No adds a row to the `audit_log` table in the same database. No action runs without the database, so build it first. Rows can only be added. After 3 refused calls in one chat, that chat can only look things up until `registry.unlock(session_id)` is called.
+Every call and every Yes or No adds a row to the `audit_log` table in the same database. No action runs without the database, so build it first. Rows can only be added. After 3 refused calls in one chat, that chat can only look things up until the owner unlocks it by typing the PIN again (`POST /unlock`).
 
 To check that no row was changed or removed:
 
@@ -124,7 +124,7 @@ To check that no row was changed or removed:
 python -c "from backend.actions.registry import verify_log; print(verify_log())"
 ```
 
-`registry.audit_log(session_id)` returns the rows themselves. Nothing checks who is calling the server, so "one chat" is not "one person".
+`registry.audit_log(session_id)` returns the rows themselves. A chat's ID says which conversation a call belongs to, never who is calling. Who is calling is decided by the sign-in, described next.
 
 A Yellow action can have a `prepare` step. It runs before the owner is asked and pins the request down: a customer's name becomes the one ID it points to, a date becomes a real date, a standard text is written in. What it returns is what is stored, shown to the owner, logged and run. It raises `registry.ActionError` to turn down a request that cannot go ahead, such as a reminder for a customer with nothing overdue, so the owner is never shown a card for it. A `prepare` step must only read.
 
@@ -132,15 +132,51 @@ Text from the AI model is treated as data, never as layout. On the approval card
 
 On the card, look-alike quotation marks in a name and more than three blanks in a row are written out as codes too. All of this is a best effort: no list of misleading characters is complete, and the card is still plain text. The sound fix is on the screen: draw the model's text in its own box, so that nothing inside it can pass for the app's words.
 
+## Signing in
+
+The server answers only its owner. There is one demo owner, who signs in with a PIN, as in a bank app. The code is in `backend/auth.py`.
+
+The PIN is the environment variable `RIGHTSIZE_OWNER_PIN`, set when the server starts. It is never written to the repository, the database or a log. Use six digits or more.
+
+| Endpoint | Needs a sign-in | What it does |
+| --- | --- | --- |
+| `GET /health` | No | Says the server is up. |
+| `GET /me` | No | Says whether the caller is signed in. |
+| `POST /login` with `pin` | No | The right PIN is answered with a cookie that lasts 8 hours. |
+| `POST /logout` | Yes | Ends the login. |
+| `POST /unlock` with `session_id` and `pin` | Yes | Asks for the PIN again, then unlocks that chat. |
+| Every other endpoint, including any added later | Yes | Without a sign-in the answer is status 401, "Not signed in." |
+
+What the server does:
+
+- **The cookie.** It holds a long random token, and the database keeps only the token's SHA-256. Scripts on the page cannot read the cookie (`HttpOnly`), and the browser does not send it with a request another website started (`SameSite=Strict`).
+- **Wrong PINs.** After 5 wrong PINs within 5 minutes, every attempt is refused for 5 minutes, the right PIN included (status 429). The wrong PINs are counted from the log, so restarting the server does not reset the count. A wrong PIN at `/unlock` counts toward the same limit and is answered with status 403, because the caller is signed in.
+- **Other websites.** A request that changes something is refused with status 403 when the browser says a page on another website sent it.
+- **The log.** A sign-in, a wrong PIN and a sign-out each add a row to `audit_log`, under the session `(owner)` with level `owner`. A successful unlock adds its row to the chat that was unlocked.
+- **Unlocking.** `/unlock` is the only caller of `registry.unlock()`. No action can unlock a chat, so nothing typed in a conversation can.
+
+Who the owner is comes from the sign-in and never from the chat. A message that claims to be from bank staff changes nothing.
+
+What it is not:
+
+- It stands in for a bank's own login. One PIN is not two-step verification.
+- With one owner, signed in means allowed for every conversation. A second owner would need each conversation tied to its owner, and that is not built.
+- The limit on wrong PINs is one limit for everybody. Whoever can reach the server can keep the owner out by typing wrong PINs. A bank limits attempts per device.
+- A page served from another port of this computer counts as local, so the check on other websites does not stop it.
+- The server speaks plain HTTP on this computer, so the cookie is not marked `Secure`.
+- The pages that describe the API, `/docs` and `/openapi.json`, stay open. They list the endpoints and hold no company data.
+
+The screen's sign-in page is phase B7 of `docs/dashboard-and-login.md`, which is on the branch `docs/dashboard-and-login`. Until that page is built, the chat page gets "Not signed in." from the server.
+
 ## Score the agent
 
 With the server running, one command asks the agent every question in `tests/scenarios/questions.json`, checks what it did and what it answered, and prints which owner questions pass today:
 
 ```sh
-python -m tests.scenarios.run
+RIGHTSIZE_OWNER_PIN=<the server's PIN> python -m tests.scenarios.run
 ```
 
-It reads what ran from the log, works the expected figures out from the books, and saves everything it saw to a dated file. Every run adds rows to the database, so use a copy for practice runs. [tests/scenarios/README.md](tests/scenarios/README.md) has the commands and the format of a case.
+The script signs in as the owner before the first question. It reads what ran from the log, works the expected figures out from the books, and saves everything it saw to a dated file. Every run adds rows to the database, so use a copy for practice runs. [tests/scenarios/README.md](tests/scenarios/README.md) has the commands and the format of a case.
 
 To run the tests of the code, with no server and no AI model:
 

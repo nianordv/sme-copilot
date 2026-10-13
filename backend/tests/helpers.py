@@ -43,6 +43,20 @@ def invoice(invoice_id, customer_id, segment, city, issue, due, amount, paid="",
             status, f"{amount:.2f}", str(terms), "", ""]
 
 
+OWNER_PIN = "24681357"
+
+
+def sign_in_as_owner(test, client):
+    """Sets the owner's PIN for the length of one test and signs the client
+    in with it. The client keeps the cookie, so its later requests are the
+    owner's."""
+    pinned = patch.dict(os.environ, {"RIGHTSIZE_OWNER_PIN": OWNER_PIN})
+    pinned.start()
+    test.addCleanup(pinned.stop)
+    response = client.post("/login", json={"pin": OWNER_PIN})
+    test.assertEqual(response.status_code, 200, response.text)
+
+
 def use_temporary_database(test):
     """Points RIGHTSIZE_DB at an empty temporary database for one test. The
     registry adds its own tables to it; there are no books in it."""

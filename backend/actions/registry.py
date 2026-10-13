@@ -1,7 +1,11 @@
 """The single execution boundary between model requests and actions.
 
 Action: name, description, parameters (JSON Schema), level, handler(**arguments),
-and optionally summarize(**arguments), the sentence the owner is asked to approve.
+and optionally summarize(**arguments), the sentence the owner is asked to approve,
+and prepare(**arguments), which pins a yellow request down before the owner is
+asked: a customer's name becomes an ID, a standard text is written in. What
+prepare returns is what is stored, shown, logged and run. It raises ActionError
+to stop a request that cannot go ahead.
 register(action) adds an action; list_actions() returns serialisable descriptions.
 execute(name, arguments, session_id) and
 confirm(confirmation_id, approved, session_id) return one of:
@@ -167,6 +171,13 @@ CREATE TABLE IF NOT EXISTS confirmations (
 """
 
 
+class ActionError(Exception):
+    """Raise from a prepare step when a request cannot go ahead for a reason
+    the model should pass on, such as a customer who is not found. The message
+    is returned as an "error" and shown on the screen as a step, so write it in
+    our own words and do not repeat text the model sent."""
+
+
 @dataclass(frozen=True)
 class Action:
     name: str
@@ -179,6 +190,10 @@ class Action:
     # reads this sentence and not the arguments. The model wrote the values,
     # so each goes in through one_line() or quoted().
     summarize: Callable[..., str] | None = None
+    # Yellow only, optional: takes the checked arguments and returns the final
+    # ones. May raise ActionError to stop the request before the owner is asked.
+    # It must only read: it runs before the owner has agreed to anything.
+    prepare: Callable[..., dict] | None = None
 
 
 _actions: dict[str, Action] = {}
@@ -198,6 +213,8 @@ def register(action: Action) -> None:
         raise ValueError("The handler must be callable.")
     if not isinstance(action.parameters, dict):
         raise ValueError("Parameters must be a JSON Schema dictionary.")
+    if action.prepare is not None and action.level != "yellow":
+        raise ValueError("Only a yellow action has a prepare step.")
     _arguments_model(action)  # Fails here, at start-up, if the schema cannot be checked.
     with _lock:
         if action.name in _actions:
@@ -334,7 +351,41 @@ def _execute(conn, name, arguments, session_id) -> dict:
 
     if action.level == "green":
         return _run(conn, action, checked, session_id)
+    if action.prepare is not None:
+        try:
+            checked = _prepared(action, checked)
+        except ActionError as stop:
+            reply = _error(_shorten(_escaped(_text(stop)), RESULT_LIMIT))
+        except Exception as problem:
+            _report(action.name, problem)
+            reply = _error(FAILED)
+        else:
+            reply = None
+        if reply is not None:
+            with _transaction(conn):
+                _log(conn, session_id, name, checked, "yellow", "error", reply["message"])
+            return reply
     return _ask(conn, action, checked, session_id)
+
+
+def _prepared(action, arguments) -> dict:
+    """The final arguments of a yellow request, held to the same rules as the
+    ones the model sent: an object the log can keep in full and the handler
+    can take."""
+    marker = _inside_action.set(action.name)
+    try:
+        final = action.prepare(**deepcopy(arguments))
+    finally:
+        _inside_action.reset(marker)
+    if not isinstance(final, dict) or not all(isinstance(key, str) for key in final):
+        raise TypeError("A prepare step must return the arguments as a dictionary.")
+    text = json.dumps(final, ensure_ascii=False, allow_nan=False)
+    text.encode("utf-8")
+    inspect.signature(action.handler).bind(**final)
+    if len(_escaped(text)) > ARGUMENTS_LIMIT:
+        raise ActionError("This request is too long to show the owner in full.")
+    # Rebuilt from its JSON, so the owner is shown exactly what will be stored and run.
+    return json.loads(text)
 
 
 def _ask(conn, action, arguments, session_id) -> dict:
@@ -711,7 +762,8 @@ def _check_arguments(action, arguments) -> dict:
     try:
         json.dumps(arguments, allow_nan=False)
         checked = _arguments_model(action).model_validate(arguments).model_dump(exclude_none=True)
-        inspect.signature(action.handler).bind(**checked)
+        # What the model sends goes to the prepare step first, where there is one.
+        inspect.signature(action.prepare or action.handler).bind(**checked)
         text = json.dumps(checked, ensure_ascii=False, allow_nan=False)
         text.encode("utf-8")  # Half of a character pair cannot be stored.
     except ValidationError as invalid:

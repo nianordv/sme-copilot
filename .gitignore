@@ -35,3 +35,6 @@ ml/artifacts/
 
 # The demo company's books (rebuild with python -m backend.bank.seed)
 backend/data/*.db
+
+# Scoring runs (copy the run you want to keep to a tracked place)
+tests/scenarios/results/

@@ -30,6 +30,11 @@ def money(value: float | None) -> float:
     return round(float(value or 0), 2)
 
 
+def gel(amount: float) -> str:
+    """An amount as people read it: GEL 1,500.50."""
+    return f"GEL {amount:,.2f}"
+
+
 # The registry does not check argument types yet (that is phase A3), and a
 # small model often sends "true" or "30" as text. Read both forms the same way,
 # so that "false" is never taken for yes.

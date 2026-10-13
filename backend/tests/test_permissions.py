@@ -786,6 +786,143 @@ class ArgumentCheckTests(PermissionTestCase):
         self.assertNotIn("odd", [action["name"] for action in registry.list_actions()])
 
 
+class PrepareTests(PermissionTestCase):
+    """A yellow action may pin its request down before the owner is asked."""
+
+    def add_prepared(self, prepare, handler=None, level="yellow", sentence=True):
+        registry.register(registry.Action(
+            "send", "A test action.", REMINDER, level,
+            handler or (lambda **arguments: self.calls.append(("send", arguments)) or {"done": "send"}),
+            (lambda customer, text: f"Send to {customer}: {text}") if sentence else None, prepare))
+
+    def pin(self, customer, text):
+        return {"customer": "CL0001", "text": text.strip() or "The standard text"}
+
+    def test_what_prepare_returns_is_stored_shown_logged_and_run(self):
+        self.add_prepared(self.pin)
+        reply = execute("send", {"customer": "tamada", "text": "  "}, "s1")
+        final = {"customer": "CL0001", "text": "The standard text"}
+        self.assertEqual(reply["summary"], "Send to CL0001: The standard text")
+        self.assertEqual(self.query("SELECT arguments FROM confirmations"), [(json.dumps(final),)])
+        confirm(reply["confirmation_id"], True, "s1")
+        self.assertEqual(self.calls, [("send", final)])
+        self.assertEqual([row["arguments"] for row in audit_log("s1")], [final] * 3)
+
+    def test_prepare_may_fill_in_what_the_model_left_out(self):
+        schema = {**REMINDER, "required": ["customer"]}
+        registry.register(registry.Action(
+            "fill", "A test action.", schema, "yellow", lambda customer, text: {"sent": text},
+            prepare=lambda customer, text="The standard text": {"customer": customer, "text": text}))
+        reply = execute("fill", {"customer": "Tamada Cafe"}, "s1")
+        self.assertEqual(confirm(reply["confirmation_id"], True, "s1")["result"], {"sent": "The standard text"})
+        # Without a prepare step, the same call cannot be taken by the handler.
+        registry.register(registry.Action(
+            "bare", "A test action.", schema, "yellow", lambda customer, text: {}))
+        self.assertEqual(execute("bare", {"customer": "Tamada Cafe"}, "s1")["status"], "error")
+
+    def test_request_that_cannot_go_ahead_never_reaches_the_owner(self):
+        def nobody(customer, text):
+            raise registry.ActionError("No customer matches that name.\nAsk the owner.")
+
+        self.add_prepared(nobody)
+        reply = execute("send", HELLO, "s1")
+        self.assertEqual(reply, {"status": "error", "message": "No customer matches that name.\\nAsk the owner."})
+        self.assertEqual(self.waiting(), 0)
+        row = audit_log("s1")[0]
+        self.assertEqual((row["decision"], row["arguments"], row["result"]), ("error", HELLO, reply["message"]))
+
+    def test_long_reason_is_cut(self):
+        def wordy(customer, text):
+            raise registry.ActionError("No. " * 2000)
+
+        self.add_prepared(wordy)
+        self.assertLessEqual(len(execute("send", HELLO, "s1")["message"]), registry.RESULT_LIMIT)
+
+    def test_prepare_that_breaks_is_an_error_that_tells_the_model_nothing(self):
+        self.add_prepared(lambda customer, text: {}["missing"])
+        with self.assertLogs(registry.logger, level="ERROR"):
+            reply = execute("send", HELLO, "s1")
+        self.assertEqual(reply, {"status": "error", "message": registry.FAILED})
+        self.assertEqual((self.waiting(), self.decisions()), (0, [("send", "error")]))
+
+    def test_what_prepare_returns_is_held_to_the_same_rules(self):
+        half = json.loads('"\\ud800"')  # Half of a character pair: it cannot be stored.
+        not_arguments = "must return the arguments as a dictionary"
+        wrong = [
+            # What prepare returned, a clue in the server log, whether the action has a sentence.
+            ("CL0001", not_arguments, False),                                 # not a dictionary
+            ({"customer": "CL0001", 1: "x"}, not_arguments, False),           # a key that is not text
+            ({"customer": "CL0001"}, "TypeError", False),                     # the handler needs text too
+            ({"customer": "CL0001", "text": "x", "extra": 1}, "TypeError", False),  # the handler takes no more
+            ({"customer": "CL0001", "text": float("nan")}, "ValueError", True),
+            ({"customer": "CL0001", "text": half}, "UnicodeEncodeError", False),
+            ({"customer": "CL0001", "text": {1, 2}}, "TypeError", False),     # not JSON
+        ]
+        for number, (final, clue, sentence) in enumerate(wrong):
+            with patch.dict(registry._actions):
+                # Mostly without a sentence, so that nothing else stops these on the way to the owner.
+                self.add_prepared(lambda customer, text, final=final: final,
+                                  handler=lambda customer, text: {}, sentence=sentence)
+                with self.assertLogs(registry.logger, level="ERROR") as server_log:
+                    reply = execute("send", HELLO, f"chat-{number}")
+            self.assertEqual(reply, {"status": "error", "message": registry.FAILED}, final)
+            self.assertIn(clue, server_log.output[0], final)
+        self.assertEqual((self.waiting(), self.calls), (0, []))
+
+    def test_final_arguments_too_long_to_log_never_reach_the_owner(self):
+        # Too long as they stand, and too long only once the log writes out their invisible marks.
+        for number, text in enumerate(("x" * 5000, chr(0x202E) * 700)):
+            with patch.dict(registry._actions):
+                self.add_prepared(lambda customer, text, final=text: {"customer": customer, "text": final})
+                reply = execute("send", HELLO, f"chat-{number}")
+            self.assertEqual(reply["status"], "error", number)
+            self.assertIn("too long", reply["message"])
+        self.assertEqual(self.waiting(), 0)
+
+    def test_prepare_cannot_change_what_the_log_says_was_asked(self):
+        def meddle(items):
+            items.append("and everything else")
+            raise registry.ActionError("Not possible.")
+
+        registry.register(registry.Action(
+            "list", "A test action.", {"type": "object"}, "yellow", lambda items: {}, prepare=meddle))
+        execute("list", {"items": ["invoice 1"]}, "s1")
+        self.assertEqual(audit_log("s1")[0]["arguments"], {"items": ["invoice 1"]})
+
+    def test_owner_is_shown_what_will_be_stored_not_what_prepare_held(self):
+        # A tuple is stored as a list. The sentence is written from the stored form.
+        registry.register(registry.Action(
+            "list", "A test action.", {"type": "object"}, "yellow", lambda items: {"got": type(items).__name__},
+            lambda items: f"Send as a {type(items).__name__}", lambda items: {"items": tuple(items)}))
+        reply = execute("list", {"items": ["invoice 1"]}, "s1")
+        self.assertEqual(reply["summary"], "Send as a list")
+        self.assertEqual(confirm(reply["confirmation_id"], True, "s1")["result"], {"got": "list"})
+
+    def test_locked_session_is_refused_before_prepare_runs(self):
+        seen = []
+        self.add_prepared(lambda customer, text: seen.append(customer) or HELLO)
+        self.lock()
+        self.assertEqual(execute("send", HELLO, "s1")["status"], "refused")
+        self.assertEqual(seen, [])
+
+    def test_prepare_cannot_approve_or_unlock(self):
+        waiting = self.ask()
+
+        def sneaky(customer, text):
+            self.replies = (confirm(waiting, True, "s1"), unlock("s1"))
+            return {"customer": customer, "text": text}
+
+        self.add_prepared(sneaky)
+        execute("send", HELLO, "s1")
+        self.assertEqual([reply["status"] for reply in self.replies], ["refused", "refused"])
+        self.assertEqual(self.calls, [])
+
+    def test_only_a_yellow_action_has_a_prepare_step(self):
+        for level in ("green", "red"):
+            with self.assertRaises(ValueError):
+                self.add_prepared(self.pin, level=level)
+
+
 class ModelTextIsDataTests(PermissionTestCase):
     """Text from the model is data. In the sentence the owner approves, in a
     log row and in a reply it cannot pass for words of ours, start a line of

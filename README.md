@@ -6,20 +6,22 @@ It is our entry for the 2026 Shenzhen FinTechathon, International AI Track, Topi
 
 The full picture is in the team brief: [docs/Idea_md.md](docs/Idea_md.md), also as a [PDF](docs/Idea.pdf).
 
-## Where things are on 4 Oct 2026
+## Where things are on 13 Oct 2026
 
-`main` and `dev` hold only the documents. The code is on two branches that are not merged yet.
+`main` holds only the documents. `dev` holds the chat screen, the server and the payment forecast. The books and the actions are on branches that are not merged into `dev` yet. Each one in this table contains the ones above it:
 
-| Branch | What is there | Folders |
-| --- | --- | --- |
-| `feat/basic-chat` | Chat screen, server and the local AI model | `frontend/`, `backend/` |
-| `feat/payment-forecast` | Generated invoice history and the payment forecast | `ml/`, `docs/data-generation-and-handling.md` |
+| Branch | What it adds |
+| --- | --- |
+| `feat/company-books` | The company's books as a database |
+| `feat/lookups` | The look-up actions |
+| `feat/permission-checks` | The permission levels, the log and the lock |
+| `feat/more-actions` | Reminders, alerts, plans, option costs, the credit-request draft and the owner-only actions |
 
-The chat cannot see the company's data yet. Connecting the two is the next step.
+`feat/cash-forecast` adds the cash forecast action. It is built on `feat/permission-checks`, beside `feat/more-actions`, so the two still have to be merged with each other.
 
 ## Run the chat
 
-On `feat/basic-chat`, from the repository root. You need Python 3, Node.js and [Ollama](https://ollama.com).
+From the repository root. You need Python 3, Node.js and [Ollama](https://ollama.com). Bill can do nothing without the company's books, so [build them](#build-the-companys-books) before you ask the first question.
 
 1. Download the model once. It is about 5 GB.
 
@@ -48,7 +50,7 @@ On `feat/basic-chat`, from the repository root. You need Python 3, Node.js and [
 
 ## Generate the data and prepare the forecast
 
-On `feat/payment-forecast`, from the repository root:
+From the repository root:
 
 ```sh
 python3 -m venv ml/.venv
@@ -81,14 +83,27 @@ Run the command again whenever the CSV or `company.json` changes. It rebuilds th
 | --- | --- | --- |
 | `get_receivables`, `get_customer`, `get_balance`, `get_upcoming_outflows` | Green | Look things up in the books. |
 | `draft_reminder` | Green | Writes a payment reminder for one customer from a fixed template. Sends nothing. |
+| `compare_options` | Green | Lists the ways to cover a shortfall of a given size for a given number of days (remind late customers, wait, overdraft, loan), each with its total cost in GEL and its yearly rate, cheapest first. |
 | `send_reminder` | Yellow | Saves the reminder the owner approved to the `outbox` table. |
 | `set_alert` | Yellow | Stores an alert for a date, or for the bank balance falling below an amount, in the `alerts` table. |
 | `save_plan` | Yellow | Stores a plan the owner agreed to in the `plans` table. |
+| `prepare_credit_request` | Yellow | Saves a filled-in request for an overdraft or a loan to the `credit_request_drafts` table. It stays a draft. |
 | `transfer_money`, `take_loan`, `repay_loan`, `submit_credit_request` | Red | Always refused and logged. |
 
-Nothing leaves the database. A "sent" reminder is a row in `outbox`, and nothing watches the alerts or sends a notification. Rebuilding the books leaves these tables alone.
+Nothing leaves the database. A "sent" reminder is a row in `outbox`, nothing watches the alerts or sends a notification, and no credit request reaches a bank. Rebuilding the books leaves these tables alone.
 
-Still to come in phase A4: `compare_options` and `prepare_credit_request`.
+### Product terms and the cost of each option
+
+The overdraft's and the loan's terms come from one file, `backend/data/products.json`. They are placeholders (overdraft 16% a year, loan 15% a year plus a 1% fee) until the finance owners overwrite that file. An edit shows up at the next question, with no restart and no rebuild.
+
+The arithmetic is in `backend/bank/products.py`, and the AI model takes no part in it:
+
+- Overdraft: the amount times the yearly rate, for the days used out of 365. GEL 8,000 for 21 days at 16% costs GEL 73.64.
+- Loan: equal monthly payments over the whole term, plus the fee. GEL 30,000 over 12 months at 15% costs GEL 2,493.00 in interest plus a fee of GEL 300.00.
+
+`compare_options` marks the cheapest option that covers the shortfall as recommended. When that option depends on customers paying, it also names a fallback: the cheapest option that is sure to bring the money. Waiting is never recommended.
+
+The rate and fee on a draft request are the ones the owner saw on the approval card, even if the file changes before the owner presses Yes.
 
 ## Permissions and the log
 

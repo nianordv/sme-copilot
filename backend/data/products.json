@@ -1,0 +1,18 @@
+{
+  "_note": "PLACEHOLDER TERMS, not a real bank's and not agreed by the team. Finance: overwrite the numbers here. No other file hard-codes them, and no re-seed is needed.",
+  "placeholder": true,
+  "overdraft": {
+    "name": "Business overdraft",
+    "yearly_rate_percent": 16.0,
+    "fee_percent": 0.0,
+    "limit": 100000.00
+  },
+  "term_loan": {
+    "name": "12-month business loan",
+    "yearly_rate_percent": 15.0,
+    "fee_percent": 1.0,
+    "term_months": 12,
+    "min_amount": 5000.00,
+    "max_amount": 500000.00
+  }
+}

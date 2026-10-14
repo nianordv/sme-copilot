@@ -11,6 +11,7 @@ import {
 import type { Message } from './chatStorage'
 import { ApiError, apiRequest } from './api'
 import PinForm from './PinForm'
+import Dashboard from './Dashboard'
 import './App.css'
 
 function App() {
@@ -72,6 +73,8 @@ function App() {
 function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
   const [chatStore, setChatStore] = useState(loadChatStore)
   const [input, setInput] = useState('')
+  const [page, setPage] = useState<'chat' | 'dashboard'>('chat')
+  const [dashboardRevision, setDashboardRevision] = useState(0)
   const [isSending, setIsSending] = useState(false)
   const [isConfirming, setIsConfirming] = useState(false)
   const submittedConfirmations = useRef(new Set<string>())
@@ -190,6 +193,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
     setInput('')
     setError(null)
     setShowUnlock(false)
+    setPage('chat')
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -403,6 +407,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
     setInput('')
     setError(null)
     setShowUnlock(false)
+    setPage('chat')
   }
 
   async function handleConfirmation(message: Message, approved: boolean) {
@@ -455,6 +460,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
     } finally {
       const finalOutcome = outcome
       const finalStatus = status
+      if (!signedOut) setDashboardRevision((value) => value + 1)
       if (!signedOut) setMessages((previous) => previous.map((item) => item.id === message.id
         ? { ...item, confirmation: { ...confirmation, outcome: finalOutcome },
           actions: [...(item.actions ?? []), { name: 'confirmation', status: finalStatus, label: finalOutcome }] }
@@ -500,6 +506,10 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
 
         <div className="header-controls">
+        <button type="button" className="new-chat-button" disabled={isBusy}
+          onClick={() => { setShowUnlock(false); setPage(page === 'chat' ? 'dashboard' : 'chat') }}>
+          {page === 'chat' ? 'Dashboard' : 'Chat'}
+        </button>
         <button type="button" className="new-chat-button" onClick={signOut} disabled={isBusy}>
           {isSigningOut ? 'Signing out…' : 'Sign out'}
         </button>
@@ -514,6 +524,12 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
       </header>
 
+      <Dashboard active={page === 'dashboard'} revision={dashboardRevision} onSignedOut={onSignedOut}
+        onAskBill={(question) => {
+          startNewChat()
+          setInput(question)
+        }} />
+      <div className="chat-body" hidden={page !== 'chat'}>
       <div className="connection-notice">
         Demo actions use fictional data. Real financial data is not connected yet.
       </div>
@@ -609,6 +625,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
           </button>
         </div>
       </form>
+      </div>
     </main>
   </div>
 )

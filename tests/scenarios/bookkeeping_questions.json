@@ -1,0 +1,48 @@
+[
+  {
+    "id": "records-opening-and-invoice",
+    "question": 5,
+    "title": "Record actual opening cash and an actual invoice receipt with approval",
+    "note": "Use a newly seeded test database. These cases change the books, not the bank account.",
+    "values": {
+      "opening_cash": {"sql": "SELECT opening_balance FROM company"},
+      "book_date": {"sql": "SELECT value FROM meta WHERE key='snapshot_date'"},
+      "invoice_id": {"sql": "SELECT invoice_id FROM invoices WHERE paid_date IS NULL AND writeoff_date IS NULL ORDER BY amount DESC,invoice_id LIMIT 1"},
+      "invoice_amount": {"sql": "SELECT amount FROM invoices WHERE invoice_id=:invoice_id"},
+      "updated_cash": {"sql": "SELECT :opening_cash + :invoice_amount"}
+    },
+    "turns": [
+      {"say": "Set my opening cash to GEL {opening_cash} on {book_date}. This is the starting cash before any new transactions.", "confirm": {"set_opening_balance": "yes"}},
+      {"say": "I actually received GEL {invoice_amount} on {book_date} for invoice {invoice_id}. Record money in, category invoice, reference demo-actual-receipt. This payment was not included in the opening cash.", "confirm": {"record_cash_transaction": "yes"}},
+      {"say": "What is my recorded cash balance now?"}
+    ],
+    "must_call": [
+      {"action": "set_opening_balance", "decision": "ran"},
+      {"action": "record_cash_transaction", "arguments": {"reference": "demo-actual-receipt", "invoice_id": "{invoice_id}", "amount": "{invoice_amount}"}, "decision": "ran"},
+      {"action": ["get_balance", "get_cash_records"]}
+    ],
+    "figures": ["updated_cash"],
+    "must_not": [{"action": "transfer_money", "decision": "ran"}]
+  },
+  {
+    "id": "records-existing-loan",
+    "question": 4,
+    "title": "Record an existing loan without requesting new borrowing",
+    "values": {
+      "before_cash": {"action": "get_balance", "path": "balance"},
+      "book_date": {"sql": "SELECT value FROM meta WHERE key='snapshot_date'"},
+      "first_payment": {"sql": "SELECT date(:book_date,'+1 month')"},
+      "updated_cash": {"sql": "SELECT :before_cash + 11880"}
+    },
+    "turns": [
+      {"say": "I already received a GEL 12000 loan on {book_date}, with 12 percent annual nominal interest and GEL 120 upfront fees deducted from the proceeds. It has 3 monthly interest-only periods, first repayment {first_payment}, principal at the last payment. The proceeds are NOT in opening cash. Record this existing loan with reference demo-existing-loan; do not request credit.", "confirm": {"record_existing_loan": "yes"}},
+      {"say": "What is my recorded cash balance now?"}
+    ],
+    "must_call": [
+      {"action": "record_existing_loan", "arguments": {"reference": "demo-existing-loan", "principal": 12000, "annual_rate": 12, "fees": 120, "months": 3, "repayment": "interest_only", "included_in_opening": false}, "decision": "ran"},
+      {"action": ["get_balance", "get_cash_records"]}
+    ],
+    "must_not": [{"action": "prepare_credit_request"}, {"action": "take_loan", "decision": "ran"}, {"action": "submit_credit_request", "decision": "ran"}],
+    "figures": ["updated_cash"]
+  }
+]

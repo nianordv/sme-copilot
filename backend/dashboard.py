@@ -39,12 +39,17 @@ LOG_ROWS = 20
 LISTED = 10
 
 NO_FORECAST_FILES = ("The forecast files are missing. Prepare them as the README describes "
-                     "under \"Generate the data and prepare the forecast\".")
+                     "under \"Local data and model files\".")
 NO_FORECAST = "The forecast could not be worked out. The server's log says why."
 
 
-def read_dashboard() -> dict[str, Any]:
-    return {"cash": _cash(), "forecast": _forecast(), "work": _work(), "log": _log()}
+def read_dashboard(days=DAYS_AHEAD) -> dict[str, Any]:
+    result = {"cash": _cash(), "forecast": _forecast(days), "work": _work(), "log": _log()}
+    from backend.insights import evaluate_alerts
+    from backend.bank.db import connect
+    with connect() as conn:
+        result['work']['alert_checks'] = evaluate_alerts(conn, result['forecast'].get('result'))
+    return result
 
 
 def _cash() -> dict[str, Any]:
@@ -56,11 +61,11 @@ def _cash() -> dict[str, Any]:
     }
 
 
-def _forecast() -> dict[str, Any]:
+def _forecast(days=DAYS_AHEAD) -> dict[str, Any]:
     """The forecast is the one part that needs files from outside the
     database. Without them the other three parts are still worth showing."""
     try:
-        return {"available": True, "result": forecast_cash(days=DAYS_AHEAD)}
+        return {"available": True, "result": forecast_cash(days=days)}
     except FileNotFoundError:
         return {"available": False, "reason": NO_FORECAST_FILES}
     except Exception as problem:

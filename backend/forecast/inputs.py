@@ -60,6 +60,16 @@ def future_sales(conn, snapshot, days):
             lag = (date.fromisoformat(row['paid_date']) - date.fromisoformat(row['issue_date'])).days
             if 1 <= lag <= 60:
                 mass[lag] += row['amount'] / denominator
+    from backend.bank.db import has_table
+    if denominator and has_table(conn, 'cash_entries'):
+        for row in conn.execute(
+            "SELECT e.amount_cents,e.direction,i.issue_date,COALESCE(o.event_date,e.event_date) paid_day "
+            "FROM cash_entries e JOIN invoices i USING(invoice_id) LEFT JOIN cash_entries o ON o.entry_id=e.reversal_of "
+            "WHERE e.event_date<=? AND i.issue_date BETWEEN ? AND ?",
+            (snapshot.isoformat(), (snapshot-timedelta(days=149)).isoformat(), (snapshot-timedelta(days=60)).isoformat())):
+            lag = (date.fromisoformat(row['paid_day'])-date.fromisoformat(row['issue_date'])).days
+            if 1 <= lag <= 60:
+                mass[lag] += row['amount_cents']/100/denominator * (1 if row['direction']=='in' else -1)
     # Constant expected sales on future days 1..N, shifted by payment delay.
     receipts = daily_sales * np.cumsum(mass)[np.arange(days)]
     return receipts.tolist(), {
@@ -70,3 +80,53 @@ def future_sales(conn, snapshot, days):
         'expected_receipts': round(float(receipts.sum()), 2),
         'warning': 'Assumption, not ML output. Future sales and their uncertainty are not simulated; excluded from the no-payment case.',
     }
+
+
+# Cached by date, base files and model fingerprint. Actual receipts alter the
+# remaining amounts/cohort, not the frozen model's issue-date feature definition.
+from functools import lru_cache
+import os
+import subprocess
+import sys
+import threading
+
+_live_lock = threading.Lock()
+ROOT = Path(__file__).resolve().parents[2]
+
+
+@lru_cache(maxsize=8)
+def _score_date(as_of, source_hash, model_hash, manifest_hash):
+    executable = os.environ.get('BILLBOARD_ML_PYTHON')
+    if not executable:
+        local = ROOT / 'ml/.venv/bin/python'
+        executable = str(local) if local.exists() else sys.executable
+    result = subprocess.run([executable, '-m', 'ml.live_score'], cwd=ROOT,
+        input=json.dumps({'as_of':as_of, 'source_sha256':source_hash}), text=True,
+        capture_output=True, timeout=180, check=False)
+    if result.returncode:
+        raise ValueError('Cannot refresh payment curves. Install ml/requirements.txt and LightGBM 4.7.0 in the ML environment, and prepare the saved model/baseline.')
+    data = json.loads(result.stdout)
+    curves = np.asarray(data['curves'],dtype=float).reshape(len(data['invoice_ids']),60)
+    if data['as_of'] != as_of or not np.isfinite(curves).all() or (curves<0).any() or (curves>1).any() or (np.diff(curves,axis=1)<0).any():
+        raise ValueError('Invalid refreshed payment curves.')
+    return data, curves
+
+
+def current_curves(conn, folder, meta, invoices, as_of):
+    base = conn.execute('SELECT * FROM invoices WHERE issue_date<=? AND (paid_date IS NULL OR paid_date>?) AND (writeoff_date IS NULL OR writeoff_date>?) ORDER BY invoice_id', (meta['snapshot_date'],)*3).fetchall()
+    original, metadata = read_curves(folder, meta, base)
+    identifiers = [row['invoice_id'] for row in base]
+    if as_of.isoformat() != meta['snapshot_date']:
+        model = ROOT / 'ml/artifacts/lightgbm/leaves_16_min_100/model.txt'
+        manifest = ROOT / 'ml/artifacts/prepared/manifest.json'
+        fingerprints = [model, model.with_name('metadata.json'), ROOT/'ml/artifacts/baseline/hazards.npz', ROOT/'ml/artifacts/baseline/metadata.json']
+        model_hash = hashlib.sha256(b''.join(path.read_bytes() if path.exists() else b'missing' for path in fingerprints)).hexdigest()
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        with _live_lock:
+            data, original = _score_date(as_of.isoformat(),meta['csv_sha256'],model_hash,manifest_hash)
+        identifiers = data['invoice_ids']
+        if len(identifiers) != len(set(identifiers)) or set(identifiers) != {r['invoice_id'] for r in base}:
+            raise ValueError('Refreshed invoice membership differs from the base books.')
+        metadata = {**metadata, 'model_used':data['model_used'],'fallback':data['fallback']}
+    index = {key:i for i,key in enumerate(identifiers)}
+    return np.asarray([original[index[row['invoice_id']]] for row in invoices]).reshape(len(invoices),60), {**metadata,'prediction_as_of':as_of.isoformat()}

@@ -150,7 +150,7 @@
       "late_customer": {"sql": "SELECT c.name FROM invoices i JOIN customers c USING (customer_id) WHERE i.paid_date IS NULL AND i.writeoff_date IS NULL AND i.due_date < :today GROUP BY i.customer_id ORDER BY SUM(i.amount) DESC, i.customer_id LIMIT 1"}
     },
     "turns": [
-      {"say": "{late_customer} has just paid everything they owe me. Do I still need the overdraft?"}
+      {"say": "What if {late_customer} paid everything they owe me today? Would I still need the overdraft?"}
     ],
     "must_call": [
       {"action": "forecast_cash", "arguments": {"assume_paid": {}}}

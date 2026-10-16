@@ -478,6 +478,8 @@
 .dashboard-heading h2 { margin: 0; font-size: 22px; color: var(--user-bubble); }
 .dashboard-heading p { margin: 6px 0 0; color: var(--text-secondary); }
 .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dashboard-grid.dashboard-single { grid-template-columns: minmax(0, 1fr); }
+.dashboard-single .cash-chart { max-width: 850px; margin-inline: auto; }
 .dashboard-panel { padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; min-width: 0; }
 .dashboard-panel h3 { margin: 0 0 12px; color: var(--user-bubble); font-size: 18px; }
 .dashboard-panel h4 { margin: 20px 0 8px; font-size: 14px; }
@@ -507,3 +509,37 @@
 .ask-bill { border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; padding: 12px 0 0; cursor: pointer; text-align: left; }
 @media (max-width: 1000px) { .dashboard-grid { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .dashboard { padding: 16px; } .dashboard-panel { padding: 16px; } }
+
+.dashboard [hidden] { display: none !important; }
+.dashboard-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.dashboard-tabs button { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 13px; background: var(--surface); color: var(--text); cursor: pointer; }
+.dashboard-tabs button[aria-current="page"] { background: var(--user-bubble); color: white; }
+.risk-banner, .record-form, .funding-panel { margin-bottom: 16px; }
+.record-form form, .funding-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.dashboard label { display: grid; gap: 8px; font-size: 13px; margin: 12px 0; }
+.dashboard input, .dashboard select { min-width: 0; width: 100%; box-sizing: border-box; padding: 10px; font: inherit; background: white; color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+.record-form .checkbox-label { display: flex; align-items: flex-start; grid-column: 1/-1; }
+.checkbox-label input { width: auto; margin-top: 2px; }
+.record-form [role="alert"] { grid-column: 1/-1; color: #b91c1c; }
+.cash-chart { margin: 16px 0; }
+.cash-chart svg { width: 100%; display: block; }
+.cash-chart figcaption { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+.cash-chart i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+.share-row { margin: 16px 0; }
+.share-row > div:first-child { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; font-size: 12px; }
+.bar-track { height: 9px; border-radius: 8px; background: #e2e8f0; margin-top: 8px; overflow: hidden; }
+.bar-track > div { height: 100%; background: #2563eb; border-radius: inherit; }
+@media (max-width: 600px) { .record-form form, .funding-form { grid-template-columns: 1fr; } }
+.setup-card {
+  width: min(760px, calc(100% - 32px));
+  margin: 40px auto;
+}
+.chat-list-row { display: flex; align-items: center; gap: 4px; }
+.chat-list-row .chat-list-item { flex: 1; min-width: 0; }
+.delete-chat { border: 0; background: transparent; color: #64748b; padding: 8px; font-size: 22px; cursor: pointer; }
+.delete-chat:hover { color: #b91c1c; }
+.delete-chat:disabled { opacity: .5; cursor: default; }
+.payment-fields { border: 0; margin: 0; padding: 0; grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.payment-details { grid-column: 1 / -1; }
+.payment-details summary { cursor: pointer; margin-bottom: 12px; }
+@media (max-width: 650px) { .payment-fields { grid-template-columns: 1fr; } }

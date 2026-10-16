@@ -16,7 +16,7 @@ from backend.bank.db import connect
 from backend.tests.helpers import BooksTestCase, invoice
 
 
-class CashForecastTests(BooksTestCase):
+class CurveBooks(BooksTestCase):
     rows = [
         invoice('I1', 'C1', 'Cafe', 'Tbilisi', '2026-09-01', '2026-10-01', 100),
         invoice('I2', 'C2', 'Cafe', 'Tbilisi', '2026-09-01', '2026-10-01', 200),
@@ -46,6 +46,43 @@ class CashForecastTests(BooksTestCase):
 
     def save_metadata(self):
         (self.folder / 'metadata.json').write_text(json.dumps(self.forecast_metadata))
+
+
+class CashForecastTests(CurveBooks):
+    def test_discount_preview_does_not_count_selected_invoice_twice(self):
+        plan = {'invoice_ids': ['I1'], 'invoice_amount': 100, 'discount_cost': 2, 'borrowing': None}
+        normal = forecast_cash(days=30)
+        changed = forecast_cash(days=30, _funding_plan=plan)
+        # I1 pays in the ordinary forecast as well. The only final difference
+        # is its discount, not another 100 GEL receipt.
+        self.assertEqual(changed['likely']['weekly_balances'][-1]['balance'],
+                         normal['likely']['weekly_balances'][-1]['balance'] - 2)
+        self.assertEqual(changed['worst']['weekly_balances'][-1]['balance'],
+                         normal['worst']['weekly_balances'][-1]['balance'] + 98)
+
+    def test_preview_includes_overdraft_repayment_and_leaves_books_unchanged(self):
+        plan = {'invoice_ids': ['I1'], 'invoice_amount': 100, 'discount_cost': 2,
+                'borrowing': {'product': 'overdraft', 'principal': 50, 'fee': 1, 'interest': 2}}
+        before = forecast_cash(days=30)
+        changed = forecast_cash(days=30, _funding_plan=plan)
+        self.assertEqual(changed['likely']['weekly_balances'][-1]['balance'],
+                         before['likely']['weekly_balances'][-1]['balance'] - 5)
+        self.assertEqual(forecast_cash(days=30), before)
+
+    def test_preview_includes_new_term_loan_instalment(self):
+        plan = {'invoice_ids': ['I1'], 'invoice_amount': 100, 'discount_cost': 2,
+                'borrowing': {'product': 'term_loan', 'principal': 5000, 'fee': 50,
+                              'annual_rate': 15, 'months': 12}}
+        before = forecast_cash(days=60)
+        changed = forecast_cash(days=60, _funding_plan=plan)
+        # One repayment is inside this window (Nov 3); Dec 3 is day 61.
+        self.assertAlmostEqual(changed['likely']['weekly_balances'][-1]['balance'],
+                               before['likely']['weekly_balances'][-1]['balance'] + 4950 - 2 - 451.29, places=2)
+
+    def test_preview_rejects_invoice_balance_changes(self):
+        plan = {'invoice_ids': ['I1'], 'invoice_amount': 200, 'discount_cost': 2, 'borrowing': None}
+        with self.assertRaises(registry.ActionError):
+            forecast_cash(days=30, _funding_plan=plan)
 
     def test_three_invoice_cash_arithmetic(self):
         expenses = [{'date': date(2026, 10, 5), 'amount': 400, 'label': 'Payroll', 'category': 'salaries'}]

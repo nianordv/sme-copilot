@@ -1,214 +1,128 @@
-# Rightsize
+# BillBoard
 
-Rightsize is a copilot inside a bank's business app. It warns a small-business owner weeks before cash runs short, shows how big the gap really is, and lays out the cheapest ways to close it, including not borrowing.
+Bill is a local cash assistant for a small business. It estimates when unpaid invoices may be collected, projects cash over 30 or 60 days, compares ways to cover a gap, and explains the results in chat. All financial calculations run in Python. Bill cannot access a bank account, move money or take a loan.
 
-It is our entry for the 2026 Shenzhen FinTechathon, International AI Track, Topic E (SME Finance Copilot). The deadline is 20 Oct 2026, 23:59 Beijing time.
+This is a competition demo using synthetic Georgian invoice histories and marked placeholder company/product terms. The original team brief is in [docs/Idea_md.md](docs/Idea_md.md); its older name was Rightsize.
 
-The full picture is in the team brief: [docs/Idea_md.md](docs/Idea_md.md), also as a [PDF](docs/Idea.pdf).
+## Start the demo
 
-## Where things are on 13 Oct 2026
+Run from the repository root. Keep the backend, frontend and Ollama running in separate terminals. You need Python, Node.js and Ollama. On a new computer, first create the backend environment with `python3 -m venv backend/.venv`.
 
-`main` holds only the documents. `dev` holds the chat screen, the server and the payment forecast. The books and the actions are on branches that are not merged into `dev` yet. Each one in this table contains the ones above it:
+```sh
+source backend/.venv/bin/activate
+python -m pip install -r backend/requirements.txt
+ollama pull qwen2.5:7b
+```
 
-| Branch | What it adds |
-| --- | --- |
-| `feat/company-books` | The company's books as a database |
-| `feat/lookups` | The look-up actions |
-| `feat/permission-checks` | The permission levels, the log and the lock |
-| `feat/more-actions` | Reminders, alerts, plans, option costs, the credit-request draft and the owner-only actions |
-| `feat/test-script` | The script that scores the agent, and its first 13 cases |
+Open Ollama, or run `ollama serve` if it is not already running. An “address already in use” error means that port is occupied; do not start a second copy.
 
-`feat/cash-forecast` adds the cash forecast action. It is built on `feat/permission-checks`, beside `feat/more-actions`, so the two still have to be merged with each other. Until they are, the cases that need the forecast fail. Owner questions 1, 4, 5 and 6 each have one.
+Start the backend in zsh. Choose a private demo PIN of at least eight characters. Input is hidden; the PIN is not written into your shell history.
 
-## Run the chat
+```sh
+read -s 'RIGHTSIZE_OWNER_PIN?Choose your demo PIN: '
+export RIGHTSIZE_OWNER_PIN
+python -m uvicorn backend.main:app --reload
+```
 
-From the repository root. You need Python 3, Node.js and [Ollama](https://ollama.com). Bill can do nothing without the company's books, so [build them](#build-the-companys-books) before you ask the first question.
+In another terminal:
 
-1. Download the model once. It is about 5 GB.
+```sh
+cd frontend
+npm install
+npm run dev
+```
 
-   ```sh
-   ollama pull qwen2.5:7b
-   ```
+Open the frontend address, normally `http://localhost:5173`, and sign in. The backend normally listens on port 8000. Stop an older server in its own terminal with Ctrl+C if that port is occupied.
 
-2. Start the server. It listens on port 8000. Choose the owner's PIN here: it has no default, and without it nobody can [sign in](#signing-in).
+## Local data and model files
 
-   ```sh
-   python3 -m venv .venv
-   source .venv/bin/activate
-   python -m pip install -r backend/requirements.txt
-   RIGHTSIZE_OWNER_PIN=<a PIN of 4 or more characters> python -m uvicorn backend.main:app --reload
-   ```
-
-3. In a second terminal, start the screen and open the address it prints.
-
-   ```sh
-   cd frontend
-   npm install
-   npm run dev
-   ```
-
-`http://127.0.0.1:8000/health` answers `{"status":"ok"}` when the server is up. If Ollama is not running, the screen shows "Lost connection to Ollama."
-
-## Generate the data and prepare the forecast
-
-From the repository root:
+Generated data, the SQLite database and trained artifacts are ignored by Git. On a new computer prepare them before running the demo. Do not regenerate an established demo's source CSV or overwrite owner records just to restart the application.
 
 ```sh
 python3 -m venv ml/.venv
 source ml/.venv/bin/activate
 python -m pip install -r ml/requirements.txt
 python -m ml.generate_invoices_ge
-python -m unittest discover -s ml/tests -v
 python -m ml.prepare_data
+python -m ml.baseline
 ```
 
-This writes 50,319 generated invoices to `ml/data/` and the prepared training files to `ml/artifacts/`. Git ignores both folders, so each of us generates them locally. Training with `python -m ml.train` also needs `lightgbm`, which is not in `ml/requirements.txt` yet.
+Training and model selection are described in [ml/README.md](ml/README.md). The selected demo run is `ml/artifacts/lightgbm/leaves_16_min_100` (500 trees, 16 leaves, minimum 100 rows per leaf). Use those reviewed artifacts when available. `python -m ml.score_open_invoices` writes the initial 60-day curves and falls back explicitly to the empirical baseline if the selected model is missing. Model/source hashes must match.
 
-## Build the company's books
-
-The server reads the demo company's books from a SQLite database, `backend/data/rightsize.db`. Build it after generating the data, with the server's environment (`.venv`) active:
+With the backend environment active, seed the database once:
 
 ```sh
 python -m backend.bank.seed
 ```
 
-It copies the ledger columns of the invoice CSV into the database, gives each of the 500 customers a readable name, and adds the company's own money: the bank balance and the payments due in the next 60 days. Those amounts come from one file, `backend/data/company.json`. They are placeholders until the finance owners overwrite that file.
+This imports 50,319 invoices and 500 customers from the synthetic CSV. Company outflows come from `backend/data/company.json`; funding terms come from `backend/data/products.json`. Both contain marked placeholders. Once owner cash is initialized, the seed refuses to overwrite the books. For experiments, seed a different file using `--db /tmp/your-demo.db` and start the server with `RIGHTSIZE_DB` pointing there.
 
-Run the command again whenever the CSV or `company.json` changes. It rebuilds the books and leaves everything else in the database alone. Git ignores the database file.
+## Using the dashboard
 
-"Today" in the app is the last day of the books, 3 Oct 2026, not the day you run it. `backend.bank.db.today()` returns it.
+The six pages are Overview, Cash forecast, Invoices & customers, Transactions & loans, Funding options, and Activity.
 
-## What Bill can do
+1. Enter opening cash and its date in Overview or Transactions & loans. Review the proposed update in chat, then choose Yes. Before this setup, the figures use the clearly identified seeded demo cash.
+2. Record actual receipts and payments as they happen. Use a unique reference. Link a customer receipt to its invoice ID, and a bill or loan payment to its obligation ID. The dashboard lists these IDs. Partial receipts reduce the remaining receivable. Exact duplicate references are idempotent; a different transaction cannot reuse a reference.
+3. If an imported payment was already included in opening cash, mark it as such. It reconciles the invoice or bill without adding or subtracting cash again. Otherwise record only movements after opening cash, including later movements on that same date.
+4. Record an existing loan only after receiving it elsewhere. Enter principal, annual nominal rate, upfront fees, dates, remaining monthly periods and repayment structure. New proceeds add principal minus upfront fees to recorded cash. A loan already included in opening cash adds no proceeds again. Its future repayments enter the forecast. Older loans require remaining principal and a future schedule; the form does not infer historical repayments.
+5. Advance the reporting date explicitly. Cash remains opening cash plus recorded money in minus recorded money out. A scheduled bill is not automatically treated as paid. Unpaid past-due bills remain obligations and are assumed payable tomorrow in the forecast.
+6. Correct mistakes with reversing entries. Original entries remain. Cancelling an incorrect loan record corrects these books; it does not cancel a real loan.
 
-| Action | Level | What it does |
-| --- | --- | --- |
-| `get_receivables`, `get_customer`, `get_balance`, `get_upcoming_outflows` | Green | Look things up in the books. |
-| `draft_reminder` | Green | Writes a payment reminder for one customer from a fixed template. Sends nothing. |
-| `compare_options` | Green | Lists the ways to cover a shortfall of a given size for a given number of days (remind late customers, wait, overdraft, loan), each with its total cost in GEL and its yearly rate, cheapest first. |
-| `send_reminder` | Yellow | Saves the reminder the owner approved to the `outbox` table. |
-| `set_alert` | Yellow | Stores an alert for a date, or for the bank balance falling below an amount, in the `alerts` table. |
-| `save_plan` | Yellow | Stores a plan the owner agreed to in the `plans` table. |
-| `prepare_credit_request` | Yellow | Saves a filled-in request for an overdraft or a loan to the `credit_request_drafts` table. It stays a draft. |
-| `transfer_money`, `take_loan`, `repay_loan`, `submit_credit_request` | Red | Always refused and logged. |
+Every bookkeeping update is a Yellow action, including updates submitted through forms. It changes the books only after the owner approves the exact stored request in chat. A typed “yes” cannot approve it.
 
-Nothing leaves the database. A "sent" reminder is a row in `outbox`, nothing watches the alerts or sends a notification, and no credit request reaches a bank. Rebuilding the books leaves these tables alone.
+## Forecasts and comparisons
 
-### Product terms and the cost of each option
+The trained LightGBM model estimates daily payment probability conditional on an invoice remaining unpaid. These hazards become payment-by-date curves. The dashboard shows 7-, 14-, 30- and 60-day probabilities for remaining invoices, and customer shares of outstanding debt.
 
-The overdraft's and the loan's terms come from one file, `backend/data/products.json`. They are placeholders (overdraft 16% a year, loan 15% a year plus a 1% fee) until the finance owners overwrite that file. An edit shows up at the next question, with no restart and no rebuild.
+At a later reporting date, the server scores the frozen predictor again locally; it does not silently reuse the old date's probabilities or retrain. It uses `ml/.venv/bin/python`, or `BILLBOARD_ML_PYTHON` when explicitly configured. Actual receipts remove or reduce invoices; the model's issue-date customer-history feature definition remains frozen.
 
-The arithmetic is in `backend/bank/products.py`, and the AI model takes no part in it:
+Cash forecasts draw 2,000 possible invoice-payment futures with a fixed seed. They include recorded cash, remaining invoice receipts, scheduled unpaid bills, existing loan repayments, and a separate historical future-sales assumption. Likely is the daily median; cautious is the daily 10th percentile; the no-payment stress case assumes no invoice receipts. The cautious line is not a 90% guarantee for the entire path. Graphs connect weekly checkpoints and each scenario's minimum, rather than displaying every daily balance.
 
-- Overdraft: the amount times the yearly rate, for the days used out of 365. GEL 8,000 for 21 days at 16% costs GEL 73.64.
-- Loan: equal monthly payments over the whole term, plus the fee. GEL 30,000 over 12 months at 15% costs GEL 2,493.00 in interest plus a fee of GEL 300.00.
+Customer concentration at or above 25% is flagged as an explicit demo policy, not a learned probability of default. Saved alerts are evaluated when the dashboard opens or refreshes. There is no background notification service.
 
-`compare_options` marks the cheapest option that covers the shortfall as recommended. When that option depends on customers paying, it also names a fallback: the cheapest option that is sure to bring the money. Waiting is never recommended.
+Funding comparison includes waiting, reminders, early-payment discounts, overdraft and a term loan. Waiting/reminder costs cover known direct fees only; unknown late-payment consequences are not priced. Discounts require customer agreement and use whole selected invoices; selection is not a global optimization. Bank credit remains subject to approval. Nominal annual rates and the simple annualized discount equivalent are not effective APRs. Term-loan cost covers its configured full term, not an invented 30-day product.
 
-The rate and fee on a draft request are the ones the owner saw on the approval card, even if the file changes before the owner presses Yes.
+Remaining modeling limits: synthetic data does not establish real-world accuracy; independent invoice draws do not model shared economic shocks; future-sales uncertainty is not simulated; applying the same timing curve to a partial invoice's remaining balance is an assumption. This demo imports a fixed invoice dataset; ongoing new-invoice import is not implemented. Predictions do not mark payments as received.
 
-## The dashboard's data
+## Security
 
-`GET /dashboard` returns everything the dashboard page shows, in one answer. The code is in `backend/dashboard.py`. The page itself is phase B8.
+- A single demo owner signs in using a server environment PIN. There is no default PIN or public signup. This stands in for a bank's authentication; it is not MFA or production identity management.
+- The browser gets a random eight-hour session cookie, HttpOnly and SameSite=Strict. Only the token's SHA-256 is stored in the database. PINs and raw tokens are not written to logs.
+- Every business endpoint requires sign-in. Host checks restrict the local app, and state-changing requests reject nonlocal browser origins. Local HTTP does not use Secure cookies; deployable public authentication would require HTTPS and stronger controls. Other ports on the same computer remain local.
+- Five wrong PIN attempts within five minutes block attempts for five minutes. The shared limit persists across server restarts. Unlocking a restricted chat requires PIN verification through a separate endpoint.
+- The model can only suggest registered actions. Green reads run; Yellow writes wait for an owner button press; Red money-moving actions never run. Arguments are validated. Pending approval belongs to one chat, expires in ten minutes, freezes exact arguments and is consumed once.
+- Three refused calls lock non-Green actions in that chat. The model cannot approve requests or unlock itself.
+- Calls, approvals, refusals and authentication events enter an append-only, hash-linked audit log. Cash corrections append opposite entries. Database triggers prevent normal updates/deletes; this is not protection against someone controlling the whole machine and rewriting the database.
+- Reminders go to a local outbox, credit requests remain drafts, and no bank connector or external sending service exists. Ollama runs locally. Untrusted text is rendered as data and cannot authorize an operation.
 
-| Part | What it holds | Where it comes from |
-| --- | --- | --- |
-| `cash.as_of` | The date of the books, which is "today" in the app | `backend.bank.db.today()` |
-| `cash.balance` | The bank balance | What `get_balance` returns |
-| `cash.receivables` | What customers owe, how much of it is overdue, by how late | What `get_receivables` returns |
-| `cash.upcoming_outflows` | The payments due in the next 30 days | What `get_upcoming_outflows` returns |
-| `forecast` | `available: true` and `result`, or `available: false` and a `reason` | What `forecast_cash` returns for 30 days |
-| `work.waiting` | Requests waiting for a Yes or No: the action, the sentence on its approval card, when it expires, which chat | The `confirmations` table |
-| `work.reminders`, `work.alerts`, `work.credit_request_drafts` | The 10 newest of each, newest first | The `outbox`, `alerts` and `credit_request_drafts` tables |
-| `work.plan` | The plan saved last, or `null` | The `plans` table |
-| `log.rows` | The 20 newest log rows, newest first | `registry.audit_log()` |
-| `log.check` | Whether the log is intact, and how many rows it holds | `registry.verify_log()` |
+The underlying action design is explained in [docs/action-registry-security.md](docs/action-registry-security.md).
 
-Each list in `work` is an object with `items` and `not_listed`, the number of older entries left out.
+## Check the submission
 
-The rules it keeps:
-
-- **Same numbers as the chat.** Each figure comes from the Python function behind the action of the same name, and the endpoint does no arithmetic. For the lowest balance, read `forecast.result.likely.lowest_balance`, and the same under `cautious` and `worst`.
-- **It only reads.** Nothing is written to the database. It does not go through the registry either, so opening or refreshing the page adds no rows to the log.
-- **No AI model.** The answer arrives in a few hundredths of a second, plus the time the forecast takes.
-- **Without the forecast files** the `forecast` part says why, and the other three parts still arrive.
-- **Text the AI model wrote** (a reminder, a plan, an alert's note, the arguments of a call) is a plain string. A character that is invisible or reorders text is written out as a visible code, as on the approval card. Draw these as plain text in a box of their own, never through the Markdown renderer.
-- **No confirmation IDs.** A waiting request is listed without the ID that approves it. The owner answers it in the chat.
-
-## Permissions and the log
-
-Everything the AI model asks for goes through `backend/actions/registry.py`. It decides by the action's level, never by what is written in the chat.
-
-| Level | What happens |
-| --- | --- |
-| Green | Runs straight away. |
-| Yellow | Is stored and shown to the owner. It runs only when the owner presses Yes: once, within 10 minutes, in the same chat. |
-| Red | Never runs. |
-
-Every call and every Yes or No adds a row to the `audit_log` table in the same database. No action runs without the database, so build it first. Rows can only be added. After 3 refused calls in one chat, that chat can only look things up until the owner unlocks it by typing the PIN again (`POST /unlock`).
-
-To check that no row was changed or removed:
+A real API/bookkeeping/model smoke check uses freshly seeded temporary books, never the owner's database. It requires the generated CSV, matching saved baseline/model artifacts and the ML environment, but no Ollama or user PIN:
 
 ```sh
-python -c "from backend.actions.registry import verify_log; print(verify_log())"
+backend/.venv/bin/python -m backend.submission_check
 ```
 
-`registry.audit_log(session_id)` returns the rows themselves. A chat's ID says which conversation a call belongs to, never who is calling. Who is calling is decided by the sign-in, described next.
-
-A Yellow action can have a `prepare` step. It runs before the owner is asked and pins the request down: a customer's name becomes the one ID it points to, a date becomes a real date, a standard text is written in. What it returns is what is stored, shown to the owner, logged and run. It raises `registry.ActionError` to turn down a request that cannot go ahead, such as a reminder for a customer with nothing overdue, so the owner is never shown a card for it. A `prepare` step must only read.
-
-Text from the AI model is treated as data, never as layout. On the approval card a name appears on one line in quotation marks, and a message has `>` in front of every line, so neither can pass for the app's own words. A character that is invisible or reorders text is written out as a visible code, on the card and in the log. When you add a Yellow action, build its sentence with `registry.one_line()` for short values and `registry.quoted()` for longer text. Text the app takes from its own database needs neither.
-
-On the card, look-alike quotation marks in a name and more than three blanks in a row are written out as codes too. All of this is a best effort: no list of misleading characters is complete, and the card is still plain text. The sound fix is on the screen: draw the model's text in its own box, so that nothing inside it can pass for the app's words.
-
-## Signing in
-
-The server answers only its owner. There is one demo owner, who signs in with a PIN, as in a bank app. The code is in `backend/auth.py`.
-
-The PIN is the environment variable `RIGHTSIZE_OWNER_PIN`, set when the server starts. It is never written to the repository, the database or a log. Use six digits or more.
-
-| Endpoint | Needs a sign-in | What it does |
-| --- | --- | --- |
-| `GET /health` | No | Says the server is up. |
-| `GET /me` | No | Says whether the caller is signed in. |
-| `POST /login` with `pin` | No | The right PIN is answered with a cookie that lasts 8 hours. |
-| `POST /logout` | Yes | Ends the login. |
-| `POST /unlock` with `session_id` and `pin` | Yes | Asks for the PIN again, then unlocks that chat. |
-| Every other endpoint, including any added later | Yes | Without a sign-in the answer is status 401, "Not signed in." |
-
-What the server does:
-
-- **The cookie.** It holds a long random token, and the database keeps only the token's SHA-256. Scripts on the page cannot read the cookie (`HttpOnly`), and the browser does not send it with a request another website started (`SameSite=Strict`).
-- **Wrong PINs.** After 5 wrong PINs within 5 minutes, every attempt is refused for 5 minutes, the right PIN included (status 429). The wrong PINs are counted from the log, so restarting the server does not reset the count. A wrong PIN at `/unlock` counts toward the same limit and is answered with status 403, because the caller is signed in.
-- **Other websites.** A request that changes something is refused with status 403 when the browser says a page on another website sent it.
-- **The log.** A sign-in, a wrong PIN and a sign-out each add a row to `audit_log`, under the session `(owner)` with level `owner`. A successful unlock adds its row to the chat that was unlocked.
-- **Unlocking.** `/unlock` is the only caller of `registry.unlock()`. No action can unlock a chat, so nothing typed in a conversation can.
-
-Who the owner is comes from the sign-in and never from the chat. A message that claims to be from bank staff changes nothing.
-
-What it is not:
-
-- It stands in for a bank's own login. One PIN is not two-step verification.
-- With one owner, signed in means allowed for every conversation. A second owner would need each conversation tied to its owner, and that is not built.
-- The limit on wrong PINs is one limit for everybody. Whoever can reach the server can keep the owner out by typing wrong PINs. A bank limits attempts per device.
-- A page served from another port of this computer counts as local, so the check on other websites does not stop it.
-- The server speaks plain HTTP on this computer, so the cookie is not marked `Secure`.
-- The pages that describe the API, `/docs` and `/openapi.json`, stay open. They list the endpoints and hold no company data.
-
-The screen's sign-in page is phase B7 of `docs/dashboard-and-login.md`, which is on the branch `docs/dashboard-and-login`. Until that page is built, the chat page gets "Not signed in." from the server.
-
-## Score the agent
-
-With the server running, one command asks the agent every question in `tests/scenarios/questions.json`, checks what it did and what it answered, and prints which owner questions pass today:
+Automated checks:
 
 ```sh
-RIGHTSIZE_OWNER_PIN=<the server's PIN> python -m tests.scenarios.run
+backend/.venv/bin/python -m unittest discover -s backend/tests
+backend/.venv/bin/python -m unittest discover -s tests/scenarios -p 'test_*.py'
+ml/.venv/bin/python -m unittest discover -s ml/tests
+cd frontend
+npm run lint
+npm run build
+npm test
 ```
 
-The script signs in as the owner before the first question. It reads what ran from the log, works the expected figures out from the books, and saves everything it saw to a dated file. Every run adds rows to the database, so use a copy for practice runs. [tests/scenarios/README.md](tests/scenarios/README.md) has the commands and the format of a case.
-
-To run the tests of the code, with no server and no AI model:
+For live agent scenarios, start a separate server with disposable books and your demo PIN, and use the same `RIGHTSIZE_DB` and `RIGHTSIZE_OWNER_PIN` for server and runner. Run the general cases before the bookkeeping cases, which intentionally change the books:
 
 ```sh
-python -m unittest discover -s backend/tests -t .
-python -m unittest discover -s tests -t .
+python -m tests.scenarios.run --server http://127.0.0.1:8001
+python -m tests.scenarios.run --server http://127.0.0.1:8001 --cases tests/scenarios/b6_questions.json
+python -m tests.scenarios.run --server http://127.0.0.1:8001 --cases tests/scenarios/bookkeeping_questions.json
 ```
+
+The last file expects freshly seeded books with no opening-cash setup. Runs save transcripts and audit evidence under `tests/scenarios/results/`. These are specific acceptance cases, not a claim that every possible conversation is correct. See [tests/scenarios/README.md](tests/scenarios/README.md) for the format.

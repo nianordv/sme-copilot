@@ -21,8 +21,7 @@ python -m ml.prepare_data
 ```
 
 The generation/preparation dependencies are pinned in `requirements.txt`.
-LightGBM training dependencies will be added with the training stage; the
-current scripts do not require LightGBM or make any paid API requests.
+LightGBM 4.7.0 is pinned alongside the data dependencies. No paid API is used.
 
 ## Corrected generation
 
@@ -73,13 +72,22 @@ days past due, and candidate-date calendar. IDs, final status, observed payment
 calendar, write-off date, and outcome targets are excluded from X. There is no
 class balancing or negative-row sampling, preserving probability estimation.
 
-The model is not trained yet. `model_config.json` defines the initial CPU
-LightGBM settings. The next stage adds a censor-aware empirical baseline,
-LightGBM fitting and tuning, calibration, and an untouched test evaluation.
-Early stopping: up to 500 trees, patience 30 on tuning-set binary log loss.
-Candidate leaves {8,16} and minimum leaf samples {100,200,400}; compare to the
-baseline using invoice-level 7/14/30/60-day Brier scores. Calibration uses only
-October–December 2025. Test results must not drive model selection.
+The selected model is trained: `artifacts/lightgbm/leaves_16_min_100`, with
+500 trees, 16 leaves and minimum 100 rows per leaf. Six preplanned configurations
+were compared on tuning data against a censor-aware empirical baseline using
+invoice-level 7/14/30/60-day Brier scores. An extended run selected 983 trees
+but its small additional benefit did not justify replacing the 500-tree model.
+A calibration adjustment was checked on a later held-out calibration period and
+was not retained. The unchanged selected model was evaluated on the test split.
+Do not use those test results for further model selection.
+
+The scripts are `baseline`, `train`, `tune`, `check_iterations`,
+`evaluate_calibration`, `check_calibration_adjustment`, `evaluate_receipts`,
+`evaluate_test` and `check_robustness`, all run as `python -m ml.<name>`.
+The train/tune commands write artifacts: they are for rebuilding an experiment,
+not starting the app. Preserve the selected model and its metadata for the demo.
+Exact evaluation results are in the saved JSON reports; lower Brier and receipt
+error are better, and improvement is relative to the same baseline and cohort.
 
 Future probabilities are obtained by chaining hazards:
 `P(paid within H days) = 1 - product(1 - daily_hazard)`.
@@ -90,3 +98,24 @@ prediction and actual receipts. Future invoices are excluded.
 Limitations: full payments only, assumed payroll dates, no common economic
 shocks, no empirically calibrated Georgian customer behavior. Cash-gap
 validation additionally requires balances and dated outflows, absent here.
+
+
+## App scoring
+
+`python -m ml.score_open_invoices` writes the selected model's full 60-day curves
+for invoices outstanding on the synthetic snapshot date, plus metadata and source
+hashes. If the selected model files are missing, it explicitly uses the saved
+empirical baseline. The backend validates that these curves match its imported
+books before using them.
+
+`ml.live_score` is the backend's local scoring worker for a later reporting date.
+It scores the frozen predictor again using new invoice ages and calendar dates;
+it does not train on test data or send records to an external service. The backend
+removes invoices reported fully paid and applies the curve to remaining amounts
+for partial receipts. This partial-invoice timing assumption is not separately
+validated. Customer-history features retain the issue-date definition used in
+training. New-invoice import and a retraining scheduler are outside this demo.
+
+The app's cash ledger, existing loan schedules and future-sales assumption are
+separate from ML. The trained model predicts invoice settlement probabilities,
+not bank balances, credit approval or an exact guaranteed payment date.

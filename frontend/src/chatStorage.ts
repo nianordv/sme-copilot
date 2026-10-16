@@ -66,7 +66,7 @@ export function createChat(): Chat {
         id: 'welcome',
         role: 'assistant',
         content:
-          'Hello, I’m Bill, your BillBoard cash assistant. I can demonstrate actions using clearly fictional data. Real financial data is not connected yet.',
+          'Hello, I’m Bill, your BillBoard cash assistant. Ask me about your cash, unpaid invoices or funding options.',
       },
     ],
   }

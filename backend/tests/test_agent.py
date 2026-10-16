@@ -18,6 +18,15 @@ def final_reply():
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_funding_preview_cannot_be_invented_without_a_tool_result(self):
+        with patch.object(agent, 'request_action_turn', AsyncMock(return_value={
+            'content': 'The loan eliminates your shortfall.'})), patch.object(registry, 'execute') as execute:
+            events = [event async for event in agent.stream_agent(
+                [{'role': 'user', 'content': 'Preview the discount plus loan plan.'}], 'owner')]
+        execute.assert_not_called()
+        self.assertIn('not calculated', events[0]['content'])
+        self.assertNotIn('eliminates', events[0]['content'])
+
     async def test_forecast_window_is_repaired_once_from_server_error(self):
         call = tool_reply('forecast_cash', {'days': 30, 'extra_outflows': [
             {'date': '2026-11-15', 'amount': 20000, 'label': 'Stock'}]})
@@ -31,7 +40,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repaired['extra_outflows'], call['tool_calls'][0]['function']['arguments']['extra_outflows'])
 
     async def test_requested_options_follow_the_calculated_gap(self):
-        request = AsyncMock(side_effect=[tool_reply('forecast_cash'), final_reply(), final_reply()])
+        request = AsyncMock(side_effect=[final_reply(), final_reply()])
         forecast = {'status': 'ok', 'result': {'cautious': {'shortfall': 8000, 'days_below_zero': 21}}}
         with patch.object(agent, 'request_action_turn', request), \
              patch.object(registry, 'execute', side_effect=[forecast, {'status': 'ok', 'result': {}}]) as execute:
@@ -39,10 +48,12 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 [{'role': 'user', 'content': "I'm short. What are my options?"}], 'owner')]
         self.assertEqual(execute.call_args_list[1].args,
                          ('compare_options', {'amount': 8000, 'days': 21}, 'owner'))
+        self.assertEqual(execute.call_args_list[0].args,
+                         ('forecast_cash', {'days': 30}, 'owner'))
         self.assertEqual(events[-1]['type'], 'done')
 
     async def test_positive_forecast_does_not_trigger_borrowing_comparison(self):
-        request = AsyncMock(side_effect=[tool_reply('forecast_cash'), final_reply()])
+        request = AsyncMock(return_value=final_reply())
         with patch.object(agent, 'request_action_turn', request), \
              patch.object(registry, 'execute', return_value={
                  'status': 'ok', 'result': {'cautious': {'shortfall': 0, 'days_below_zero': 0}}}) as execute:

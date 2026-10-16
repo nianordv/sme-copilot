@@ -117,10 +117,18 @@ def open_invoices(
     if customer_id is not None:
         sql += " AND i.customer_id = ?"
         parameters = (customer_id,)
-    return [
-        {**dict(row), "days_late": (as_of - date.fromisoformat(row["due_date"])).days}
-        for row in conn.execute(sql, parameters)
-    ]
+    from backend.bank.ledger import cents, money as from_cents, payments_by_invoice
+    paid = payments_by_invoice(conn, as_of)
+    result = []
+    for row in conn.execute(sql, parameters):
+        if row['issue_date'] > as_of.isoformat():
+            continue
+        remaining = cents(row['amount']) - paid.get(row['invoice_id'], 0)
+        if remaining > 0:
+            result.append({**dict(row), 'original_amount': row['amount'], 'amount': from_cents(remaining),
+                           'days_late': (as_of - date.fromisoformat(row['due_date'])).days})
+    return result
+
 
 
 def total(invoices: list[dict[str, Any]]) -> dict[str, Any]:
@@ -240,6 +248,15 @@ def payment_habit(
         "WHERE customer_id = ? AND paid_date IS NOT NULL",
         (customer_id,),
     ).fetchall()
+    from backend.bank.db import has_table
+    from backend.bank.ledger import payments_by_invoice, cents
+    paid = [dict(row) for row in paid if row['paid_date'] <= as_of.isoformat()]
+    if has_table(conn, 'cash_entries'):
+        net = payments_by_invoice(conn, as_of)
+        for row in conn.execute('SELECT invoice_id,due_date,amount FROM invoices WHERE customer_id=? AND paid_date IS NULL', (customer_id,)):
+            if net.get(row['invoice_id'],0) >= cents(row['amount']):
+                closed = conn.execute('SELECT MAX(event_date) FROM cash_entries WHERE invoice_id=? AND event_date<=?', (row['invoice_id'],as_of.isoformat())).fetchone()[0]
+                paid.append({'due_date':row['due_date'],'paid_date':closed})
     year_ago = (as_of - timedelta(days=365)).isoformat()
     recent = [row for row in paid if row["paid_date"] > year_ago]
     period, rows = ("last 12 months", recent) if recent else ("all history", paid)
@@ -301,10 +318,12 @@ def get_balance() -> dict[str, Any]:
         company = conn.execute(
             "SELECT name, currency, opening_balance, balance_date FROM company"
         ).fetchone()
+        from backend.bank.ledger import balance
+        current = balance(conn)
     return {
-        "as_of": company["balance_date"],
+        "as_of": current["as_of"],
         "currency": company["currency"],
-        "balance": money(company["opening_balance"]),
+        "balance": current["balance"],
         "account_holder": company["name"],
     }
 
@@ -314,11 +333,8 @@ def get_upcoming_outflows(days: int = 30) -> dict[str, Any]:
     days = min(max(as_whole_number(days, 30), 1), MAX_OUTFLOW_DAYS)
     last = as_of + timedelta(days=days)
     with connect() as conn:
-        payments = conn.execute(
-            "SELECT due_date, category, label, amount FROM scheduled_payments "
-            "WHERE due_date > ? AND due_date <= ? ORDER BY due_date, payment_id",
-            (as_of.isoformat(), last.isoformat()),
-        ).fetchall()
+        from backend.bank.ledger import obligations
+        payments = [row for row in obligations(conn) if as_of.isoformat() < row['due_date'] <= last.isoformat()]
 
     by_category: dict[str, float] = {}
     for payment in payments:

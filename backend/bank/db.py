@@ -39,11 +39,16 @@ def has_table(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+def reporting_date(conn: sqlite3.Connection) -> date:
+    if has_table(conn, 'ledger_settings'):
+        row = conn.execute('SELECT report_date FROM ledger_settings WHERE id=1').fetchone()
+        if row:
+            return date.fromisoformat(row['report_date'])
+    row = conn.execute("SELECT value FROM meta WHERE key='snapshot_date'").fetchone()
+    return date.fromisoformat(row['value'])
+
+
 def today() -> date:
-    """The app's "today": the snapshot date of the books, never the system
-    clock. Every business date in the app is measured from this."""
+    """The explicit reporting date; authentication still uses the real clock."""
     with connect() as conn:
-        row = conn.execute(
-            "SELECT value FROM meta WHERE key = 'snapshot_date'"
-        ).fetchone()
-    return date.fromisoformat(row["value"])
+        return reporting_date(conn)

@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS credit_request_drafts (
 
 
 # ------------------------------------------------------------------ option costs
-def compare_options(amount: float, days: int) -> dict[str, Any]:
+def compare_options(amount: float, days: int, quoted_annual_rate: float | None = None) -> dict[str, Any]:
     amount, days = money(amount), int(days)
     if amount < 0.01:
         return {
@@ -56,9 +56,14 @@ def compare_options(amount: float, days: int) -> dict[str, Any]:
             "message": "There is no shortfall to cover, so no borrowing is needed.",
         }
     products = load_products()
+    loan_terms = dict(products['term_loan'])
+    if quoted_annual_rate is not None:
+        if not 0 <= quoted_annual_rate <= 100:
+            raise ActionError('Annual interest must be between 0% and 100%.')
+        loan_terms['yearly_rate_percent'] = quoted_annual_rate
     with connect() as conn:
-        overdue = [invoice for invoice in open_invoices(conn, today())
-                   if invoice["days_late"] > 0]
+        all_open = open_invoices(conn, today())
+        overdue = [invoice for invoice in all_open if invoice['days_late'] > 0]
 
     options = [
         _remind_option(amount, overdue),
@@ -71,15 +76,53 @@ def compare_options(amount: float, days: int) -> dict[str, Any]:
             "note": "Free, but the shortfall stays unless customers pay in time.",
         },
         _overdraft_option(amount, days, products["overdraft"]),
-        _loan_option(amount, products["term_loan"]),
+        _loan_option(amount, loan_terms),
     ]
+    if products.get('early_discount'):
+        terms = products['early_discount']
+        percent = float(terms['percent'])
+        if not 0 < percent < 100:
+            raise ValueError('Invalid discount terms.')
+        # Whole outstanding invoices, largest first. This is a disclosed
+        # contact strategy, not an optimization over every possible subset.
+        selected=[]
+        gross_cents=0
+        net_cents=0
+        from backend.bank.ledger import cents, money as cash_money
+        for invoice in sorted(all_open,key=lambda r:(-r['amount'],r['invoice_id'])):
+            if net_cents >= cents(amount): break
+            face=cents(invoice['amount'])
+            discount=cents(invoice['amount']*percent/100)
+            gross_cents+=face
+            net_cents+=face-discount
+            selected.append(invoice['invoice_id'])
+        cost=cash_money(gross_cents-net_cents)
+        options.append({'option':'early_payment_discount','cost':cost,
+            'yearly_rate_percent':round(percent/(100-percent)*365/days*100,2),
+            'rate_basis':'Simple annualized discount cost for the requested period, not a bank APR.',
+            'covers_amount':net_cents>=cents(amount),'certain':False,
+            'discount_percent':percent,'potential_net_receipts':cash_money(net_cents),
+            'invoice_ids':selected[:10],'invoices_not_listed':max(0,len(selected)-10),
+            'note':'Conditional on customers agreeing and paying within the gap period. Discount applies to entire selected invoices, largest first; not a guaranteed or optimal collection strategy.'})
+    cost_bases = {
+        'wait': 'Direct charges only; consequences of late payment are not priced.',
+        'remind_late_customers': 'Direct charges only; consequences of late payment are not priced.',
+        'early_payment_discount': 'Discount on the full face amount of the selected invoices.',
+        'term_loan': 'Full configured product term and fees.',
+        'overdraft': 'Requested period and configured fees.',
+    }
+    for option in options:
+        option['cost_basis'] = cost_bases[option['option']]
+        if option['option'] in ('overdraft','term_loan'):
+            option['subject_to_approval']=True
+            option['note'] += ' Availability is conditional on bank approval; Bill cannot approve funding.'
     # Cheapest first. Equal costs keep the order above.
     options.sort(key=lambda option: option["cost"])
 
     covering = [option for option in options if option["covers_amount"]]
     recommended = covering[0] if covering else None
     # When the cheapest way depends on customers paying, also name the
-    # cheapest way that is sure to bring the money.
+    # cheapest credit option, still subject to the bank's approval.
     fallback = None
     if recommended is not None and not recommended["certain"]:
         fallback = next((option for option in covering if option["certain"]), None)
@@ -94,7 +137,21 @@ def compare_options(amount: float, days: int) -> dict[str, Any]:
         "options": options,
         "recommended": recommended["option"] if recommended else None,
         "fallback": fallback["option"] if fallback else None,
+        "loan_rate_scenarios": [
+            {key: value for key, value in _loan_option(
+                amount, {**loan_terms, 'yearly_rate_percent': rate}).items()
+             if key in ('yearly_rate_percent', 'principal', 'term_months',
+                        'monthly_payment', 'interest', 'fee', 'cost')}
+            for rate in sorted(set(products.get('loan_rate_scenarios', [12, 15, 18])
+                                   + ([] if quoted_annual_rate is None else [quoted_annual_rate])))
+        ],
+        "loan_scenario_note": 'Assumed nominal annual rates, not available bank offers or market minimum/maximum rates. Each scenario uses the same principal, term and fees. Costs cover the full loan term; approval is not guaranteed.',
+        "quoted_annual_rate": quoted_annual_rate,
     }
+    from backend.funding_plans import collection_plans
+    result['collection_plans'] = collection_plans(all_open, amount, days, products, loan_terms)
+    share = products.get('early_discount', {}).get('minimum_collection_share', 0.2)
+    result['collection_note'] = f'Conditional examples, ranked by direct cost. Customers must agree and pay today; borrowing requires approval. Customer choices reflect invoice amounts and cost, not a prediction that a discount will change behavior. Combinations must collect at least {share:.0%} of the stated gap under the demo selection policy. Only whole invoices and up to three-invoice bundles are considered; this is not a global optimum. Use preview_funding_plan before claiming a plan removes a forecast shortfall.'
     if products.get("placeholder"):
         result["note"] = PLACEHOLDER_TERMS
     return result
@@ -167,6 +224,11 @@ def _loan_option(amount: float, terms: dict[str, Any]) -> dict[str, Any]:
         "cost": cost["total"],
         "yearly_rate_percent": float(terms["yearly_rate_percent"]),
         "covers_amount": borrowed >= amount,
+        "principal": borrowed,
+        "term_months": terms['term_months'],
+        "monthly_payment": cost['monthly_payment'],
+        "interest": cost['interest'],
+        "fee": cost['fee'],
         "certain": True,
         "note": note,
     }
@@ -271,7 +333,9 @@ def register_borrowing_actions() -> None:
             "the shortfall and how many days it lasts. Returns each way to cover "
             "it (remind late customers, wait, overdraft, loan) with its total "
             "cost in GEL and yearly rate, cheapest first, with one recommended "
-            "and a fallback that is sure to bring the money."
+            "and a fallback subject to bank approval. Also returns customer-named collection_plans: "
+            "discount-only or discount plus borrowing the remaining gap. Explain their conditions "
+            "and costs; use preview_funding_plan to assess the cash impact."
         ),
         parameters={
             "type": "object",
@@ -287,6 +351,10 @@ def register_borrowing_actions() -> None:
                     "minimum": 1,
                     "maximum": 365,
                     "description": "How many days the shortfall lasts.",
+                },
+                "quoted_annual_rate": {
+                    "type": "number", "minimum": 0, "maximum": 100,
+                    "description": "Optional nominal annual loan rate explicitly quoted by the owner. Never invent a quote.",
                 },
             },
             "required": ["amount", "days"],

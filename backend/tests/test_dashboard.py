@@ -151,7 +151,7 @@ class ReadOnlyTests(DashboardTestCase):
         self.assertEqual(page["work"], {
             "waiting": {"items": [], "not_listed": 0}, "reminders": {"items": [], "not_listed": 0},
             "alerts": {"items": [], "not_listed": 0}, "plan": None,
-            "credit_request_drafts": {"items": [], "not_listed": 0}})
+            "credit_request_drafts": {"items": [], "not_listed": 0}, "alert_checks": []})
         self.assertEqual(page["log"], {"check": {"intact": True, "rows": 0, "last_fingerprint": None}, "rows": []})
         made = {name for name, in self.query("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertEqual(made & set(SAVED_TABLES), set())

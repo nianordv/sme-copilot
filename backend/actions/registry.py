@@ -261,6 +261,31 @@ def confirm(confirmation_id, approved, session_id) -> dict:
         return _error(UNAVAILABLE)
 
 
+def cancel_chat_requests(session_id) -> dict:
+    """Cancel pending approvals when the signed-in owner deletes a chat."""
+    try:
+        with _records() as conn:
+            if not _valid_session(session_id):
+                return _bad_session(conn, "delete_chat", session_id)
+            if _inside_action.get() is not None:
+                return _refused("An action cannot delete a chat.")
+            with _transaction(conn):
+                rows = conn.execute("SELECT * FROM confirmations WHERE session_id = ?",
+                                    (session_id,)).fetchall()
+                for row in rows:
+                    conn.execute("DELETE FROM confirmations WHERE confirmation_id = ?",
+                                 (row["confirmation_id"],))
+                    _log(conn, session_id, row["action"], json.loads(row["arguments"]),
+                         "yellow", "declined", "Chat deleted; pending approval cancelled.",
+                         row["confirmation_id"])
+                _log(conn, session_id, "delete_chat", {}, "owner", "ran",
+                     "Chat history deletion requested; financial records preserved.")
+            return {"status": "ok", "result": {"cancelled": len(rows)}}
+    except Exception as problem:
+        _report("delete chat", problem)
+        return _error(UNAVAILABLE)
+
+
 def unlock(session_id) -> dict:
     """Clear a session's lock. This stands in for the owner re-verifying in the
     bank app, so only trusted server code may call it."""

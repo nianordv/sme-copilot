@@ -18,9 +18,10 @@ ACTION_LABELS = {
     "get_receivables": "Looked up unpaid invoices",
     "send_reminder": "Payment reminder",
     "get_customer": "Looked up the customer",
-    "get_balance": "Checked the bank balance",
+    "get_balance": "Checked recorded cash",
     "get_upcoming_outflows": "Checked upcoming payments",
     "compare_options": "Compared the cost of funding options",
+    "preview_funding_plan": "Checked the cash impact of a funding plan",
     "draft_reminder": "Drafted a payment reminder",
     "prepare_credit_request": "Credit request draft",
     "save_plan": "Cash plan",
@@ -82,6 +83,13 @@ async def stream_agent(messages, session_id):
     request_text = messages[-1]['content'].lower()
     wants_options = any(phrase in request_text for phrase in (
         'options', 'ways to cover', 'should i borrow', 'need the overdraft', 'need an overdraft'))
+    general_shortage = any(phrase in request_text for phrase in (
+        "i'm short", 'i am short', 'short of cash', 'cash shortage', 'cash shortfall'))
+    if wants_options and general_shortage and not re.search(r'\d', request_text):
+        # For an unspecified cash shortage, read the default forecast first.
+        # Asking the owner to guess the gap would defeat the purpose of Bill.
+        # This only schedules a Green read through the normal registry/limit.
+        pending_call = {'function': {'name': 'forecast_cash', 'arguments': {'days': 30}}}
 
     while True:
         check_context(conversation)
@@ -103,6 +111,12 @@ async def stream_agent(messages, session_id):
                 calls = [{'function': {'name': 'compare_options',
                           'arguments': {'amount': amount, 'days': days}}}]
         if not calls:
+            if 'preview' in request_text and any(word in request_text for word in ('loan', 'discount', 'funding')):
+                # A fluent explanation is not evidence of a calculated preview.
+                # Successful previews return their formatted result below.
+                yield {'type': 'chunk', 'content': 'I have not calculated that funding preview yet. Please specify discount only, discount plus overdraft, or discount plus term loan, along with the amount, days and any quoted rate.'}
+                yield {'type': 'done'}
+                return
             # This round already contains the answer. Do not generate it again.
             content = reply.get("content")
             if not isinstance(content, str) or not content.strip():
@@ -160,3 +174,18 @@ async def stream_agent(messages, session_id):
                 yield {"type": "error", "message": "The action result is too large to explain safely."}
                 return
             conversation.append({"role": "tool", "tool_name": name, "content": content})
+            if status == 'ok' and len(parsed) == 1:
+                # Preserve exact financial meanings: principal is money borrowed,
+                # while interest/fees are its cost. The model chooses the action;
+                # these calculated comparisons use a fixed readable presentation.
+                from backend.funding_answers import comparison_answer, preview_answer
+                value = result['result']
+                if name == 'compare_options' and 'collection_plans' in value \
+                        and not any(word in request_text for word in ('preview', 'cash impact')):
+                    yield {'type': 'chunk', 'content': comparison_answer(value)}
+                    yield {'type': 'done'}
+                    return
+                if name == 'preview_funding_plan' and 'with_plan' in value:
+                    yield {'type': 'chunk', 'content': preview_answer(value)}
+                    yield {'type': 'done'}
+                    return

@@ -45,6 +45,23 @@ class BorrowingTestCase(RegistryTestCase):
         result = compare_options(amount, days)
         return result, {option["option"]: option for option in result["options"]}
 
+    def test_rate_scenarios_hold_principal_term_and_fees_constant(self):
+        result = compare_options(4000, 30, quoted_annual_rate=17)
+        rows = result['loan_rate_scenarios']
+        self.assertEqual([r['yearly_rate_percent'] for r in rows], [12, 15, 17, 18])
+        self.assertTrue(all(r['principal'] == 5000 and r['term_months'] == 12 and r['fee'] == 50 for r in rows))
+        self.assertEqual([r['cost'] for r in rows], sorted(r['cost'] for r in rows))
+        primary = next(r for r in result['options'] if r['option'] == 'term_loan')
+        self.assertEqual(primary['cost'], rows[2]['cost'])
+        self.assertEqual(primary['yearly_rate_percent'], 17)
+
+    def test_zero_quoted_rate_still_includes_fees(self):
+        result = compare_options(6000, 30, quoted_annual_rate=0)
+        row = result['loan_rate_scenarios'][0]
+        self.assertEqual(row['monthly_payment'], 500)
+        self.assertEqual(row['interest'], 0)
+        self.assertEqual(row['cost'], 60)
+
     def ask(self, arguments, session_id="s1"):
         reply = execute("prepare_credit_request", arguments, session_id)
         self.assertEqual(reply["status"], "needs_confirmation", reply)
@@ -156,7 +173,8 @@ class CompareOptionsTests(BorrowingTestCase):
         reply = execute("compare_options", {"amount": "8000", "days": "21"}, "s1")
         self.assertEqual(reply["status"], "ok")
         self.assertEqual(reply["result"]["shortfall"], 8000.0)
-        self.assertLess(len(json.dumps(reply)), 2400)
+        # Includes three compact loan-rate scenarios as well as the options.
+        self.assertLess(len(json.dumps(reply)), 3200)
         self.assertEqual(self.decisions(), [("compare_options", "ran")])
         self.assertEqual(self.tables_made(), [])  # A look-up stores nothing.
 

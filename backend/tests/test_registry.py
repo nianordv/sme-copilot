@@ -31,6 +31,20 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.request()["status"], "ok")
         self.assertEqual(len(self.calls), 1)
 
+    def test_deleted_chat_cancels_only_its_approvals_and_keeps_audit(self):
+        self.add_action()
+        pending = self.request()
+        other = registry.execute("example", {"payload": {}}, "other")
+        result = registry.cancel_chat_requests("owner")
+        self.assertEqual(result, {"status": "ok", "result": {"cancelled": 1}})
+        self.assertNotEqual(registry.confirm(pending["confirmation_id"], True, "owner")["status"], "ok")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(registry.confirm(other["confirmation_id"], True, "other")["status"], "ok")
+        self.assertTrue(any(row["decision"] == "waiting" for row in registry.audit_log("owner")))
+        self.assertTrue(any(row["decision"] == "declined" for row in registry.audit_log("owner")))
+        self.assertTrue(registry.verify_log()["intact"])
+        self.assertEqual(registry.cancel_chat_requests("owner")["result"]["cancelled"], 0)
+
     def test_yellow_waits_and_uses_detached_exact_arguments(self):
         self.add_action()
         arguments = {"payload": {"amount": 100}}

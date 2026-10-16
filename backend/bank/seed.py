@@ -5,7 +5,8 @@
 Reads the generated invoice CSV and backend/data/company.json, and writes
 backend/data/rightsize.db. Safe to re-run: the books tables are rebuilt from
 scratch in one transaction, and every other table in the file (the audit log,
-for one) is left alone.
+for one) is left alone. Once owner cash is initialized, rebuilding is refused
+to protect their recorded books. Use a separate database for a fresh demo.
 
 Tables:
     meta                key/value: snapshot_date, currency, csv_sha256
@@ -265,6 +266,9 @@ def seed(
     conn = sqlite3.connect(database, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ledger_settings'").fetchone():
+            if conn.execute('SELECT 1 FROM ledger_settings LIMIT 1').fetchone():
+                raise ValueError('Owner cash records exist. Re-seeding is disabled; use a separate demo database.')
         for table in BOOKS_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         for statement in SCHEMA.split(";"):
@@ -272,6 +276,7 @@ def seed(
                 conn.execute(statement)
         conn.executemany("INSERT INTO meta VALUES (?, ?)", [
             ("snapshot_date", snapshot.isoformat()),
+            ("monthly_payments_json", json.dumps(company.get("monthly_payments", []))),
             ("currency", currency),
             ("csv_sha256", digest),
             ("company_numbers_are_placeholders", str(int(bool(company.get("placeholder"))))),

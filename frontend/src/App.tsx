@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, SetStateAction } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -12,6 +12,8 @@ import type { Message } from './chatStorage'
 import { ApiError, apiRequest } from './api'
 import PinForm from './PinForm'
 import Dashboard from './Dashboard'
+import FirstTimeSetup from './FirstTimeSetup'
+import type { PendingUpdate } from './BookkeepingForm'
 import './App.css'
 
 function App() {
@@ -48,7 +50,9 @@ function App() {
     setSignedIn(true)
   }
 
-  if (signedIn === true) return <ChatApp onSignedOut={() => setSignedIn(false)} />
+  if (signedIn === true) return <FirstTimeSetup onSignedOut={() => setSignedIn(false)}>
+    <ChatApp onSignedOut={() => setSignedIn(false)} />
+  </FirstTimeSetup>
 
   return (
     <main className="sign-in-card">
@@ -75,13 +79,17 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
   const [input, setInput] = useState('')
   const [page, setPage] = useState<'chat' | 'dashboard'>('chat')
   const [dashboardRevision, setDashboardRevision] = useState(0)
+  const [notice, setNotice] = useState('')
+  const onNotice = useCallback((message: string) => setNotice(message), [])
   const [isSending, setIsSending] = useState(false)
   const [isConfirming, setIsConfirming] = useState(false)
   const submittedConfirmations = useRef(new Set<string>())
   const [isUnlocking, setIsUnlocking] = useState(false)
   const [showUnlock, setShowUnlock] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
-  const isBusy = isSending || isConfirming || isUnlocking || isSigningOut
+  const [isDeleting, setIsDeleting] = useState(false)
+  const deleting = useRef(false)
+  const isBusy = isSending || isConfirming || isUnlocking || isSigningOut || isDeleting
   const [error, setError] = useState<string | null>(null)
   const storageError = useSyncExternalStore(
     subscribeToStorage,
@@ -103,6 +111,31 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
 
   function ownerRequest(path: string, options: RequestInit = {}) {
     return apiRequest(path, options, onSignedOut)
+  }
+
+  async function deleteChat(chatId: string) {
+    if (isBusy || deleting.current) return
+    const chat = chatStore.chats.find((item) => item.id === chatId)
+    if (!chat || !window.confirm(`Delete “${chat.title}”? Its messages will be removed from this browser and pending approvals cancelled. Transactions, loans and audit records will remain.`)) return
+    deleting.current = true
+    setIsDeleting(true); setError(null)
+    try {
+      const response = await ownerRequest('/chats/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: chatId }),
+      })
+      const result = await response.json()
+      if (result.status !== 'ok') throw new Error('Unable to cancel pending approvals. The chat was not deleted.')
+      const remaining = chatStore.chats.filter((item) => item.id !== chatId)
+      if (!remaining.length) remaining.push(createChat())
+      const next = { chats: remaining, activeChatId: chatStore.activeChatId === chatId ? remaining[0].id : chatStore.activeChatId }
+      saveChatStore(next)
+      setChatStore(next)
+      setInput(''); setShowUnlock(false)
+      setDashboardRevision((value) => value + 1)
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : 'Unable to delete this conversation.')
+    } finally { deleting.current = false; setIsDeleting(false) }
   }
 
   async function signOut() {
@@ -462,7 +495,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
       const finalStatus = status
       if (!signedOut) setDashboardRevision((value) => value + 1)
       if (!signedOut) setMessages((previous) => previous.map((item) => item.id === message.id
-        ? { ...item, confirmation: { ...confirmation, outcome: finalOutcome },
+        ? { ...item, content: 'Approval request result:', confirmation: { ...confirmation, outcome: finalOutcome },
           actions: [...(item.actions ?? []), { name: 'confirmation', status: finalStatus, label: finalOutcome }] }
         : item))
       setIsConfirming(false)
@@ -476,8 +509,7 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
 
       <nav className="chat-list" aria-label="Select a conversation">
         {chatStore.chats.map((chat) => (
-          <button
-            key={chat.id}
+          <div className="chat-list-row" key={chat.id}><button
             type="button"
             className={`chat-list-item ${
               chat.id === chatStore.activeChatId ? 'is-active' : ''
@@ -491,6 +523,9 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
           >
             {chat.title}
           </button>
+          <button className="delete-chat" type="button" disabled={isBusy}
+            aria-label={`Delete conversation: ${chat.title}`} title="Delete conversation"
+            onClick={() => void deleteChat(chat.id)}>×</button></div>
         ))}
       </nav>
     </aside>
@@ -524,16 +559,20 @@ function ChatApp({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
       </header>
 
-      <Dashboard active={page === 'dashboard'} revision={dashboardRevision} onSignedOut={onSignedOut}
+      <Dashboard active={page === 'dashboard'} revision={dashboardRevision} onSignedOut={onSignedOut} sessionId={activeChat.id} onNotice={onNotice}
+        onPending={(update: PendingUpdate) => {
+          setMessages((previous) => [...previous, { id: crypto.randomUUID(), role: 'assistant',
+            content: 'Review this bookkeeping update. Nothing has been recorded yet.',
+            confirmation: { confirmationId: update.confirmation_id, summary: update.summary } }])
+          setDashboardRevision((value) => value + 1)
+          setPage('chat')
+        }}
         onAskBill={(question) => {
           startNewChat()
           setInput(question)
         }} />
+      {notice && page === 'chat' && <div className="connection-notice" role="status">{notice}</div>}
       <div className="chat-body" hidden={page !== 'chat'}>
-      <div className="connection-notice">
-        Demo actions use fictional data. Real financial data is not connected yet.
-      </div>
-
       <section
         className="messages"
         aria-label="Conversation"

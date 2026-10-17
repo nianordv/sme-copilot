@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
+import re
 
 from backend.bank.db import connect, has_table, reporting_date
 from backend.actions.registry import ActionError
@@ -63,6 +64,21 @@ def money(value):
     return round(value / 100, 2)
 
 
+DATE_TEXT = re.compile(r'\d{4}-\d{2}-\d{2}')
+
+
+def calendar_day(text):
+    """A real day written YYYY-MM-DD, the only form stored. SQL here compares
+    dates as text: Python also reads 20261003 as 3 October, but stored like
+    that a receipt would never count and its reversal would."""
+    try:
+        if isinstance(text, str) and DATE_TEXT.fullmatch(text):
+            return date.fromisoformat(text)
+    except ValueError:
+        pass
+    raise ActionError('Write dates as YYYY-MM-DD, a real day such as 2026-10-03.')
+
+
 def schema(conn):
     # execute individually: executescript would commit an existing transaction.
     import sqlite3
@@ -101,7 +117,7 @@ def canonical(data):
 
 
 def initialize(amount, opening_date):
-    day = date.fromisoformat(opening_date)
+    day = calendar_day(opening_date)
     if day > date.max - timedelta(days=60):
         raise ActionError('Choose a reporting date with room for the next 60 forecast days.')
     amount_cents = cents(amount)
@@ -314,7 +330,7 @@ def record_cash(
         raise ActionError(
             'Use record_existing_loan for proceeds. For a repayment, choose the matching loan obligation ID.'
         )
-    day = date.fromisoformat(event_date)
+    day = calendar_day(event_date)
     if direction not in ('in', 'out'):
         raise ActionError('A cash entry must be money in or money out.')
     with connect() as conn:
@@ -433,7 +449,7 @@ def reverse_entry(entry_id, reference, reason):
 
 
 def advance_date(report_date):
-    day = date.fromisoformat(report_date)
+    day = calendar_day(report_date)
     if day > date.max - timedelta(days=60):
         raise ActionError('Choose a reporting date with room for the next 60 forecast days.')
     with connect() as conn:
@@ -466,7 +482,7 @@ def repayment_schedule(principal, annual_rate, months, first_payment_date, repay
         or repayment not in ('amortizing', 'interest_only', 'bullet')
     ):
         raise ActionError('Use 1–360 months and a supported repayment structure.')
-    first = date.fromisoformat(first_payment_date)
+    first = calendar_day(first_payment_date)
     monthly = rate / Decimal(1200)
     level = (
         Decimal(principal) / months
@@ -512,7 +528,7 @@ def record_loan(
     principal_cents, fee_cents = cents(principal, True), cents(fees)
     if fee_cents < 0 or fee_cents >= principal_cents:
         raise ActionError('Upfront fees must be nonnegative and smaller than principal.')
-    start, first = date.fromisoformat(disbursed_on), date.fromisoformat(first_payment_date)
+    start, first = calendar_day(disbursed_on), calendar_day(first_payment_date)
     if first <= start:
         raise ActionError('The first repayment must be after disbursement.')
     schedule = repayment_schedule(principal, annual_rate, months, first_payment_date, repayment)

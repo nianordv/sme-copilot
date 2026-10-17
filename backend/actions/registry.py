@@ -20,6 +20,8 @@ Levels: Green runs. Yellow is stored in the database with its exact arguments
 and runs only when confirm() approves it: an ID works once, in one session, for
 10 minutes, and what runs is what was stored. Red never runs. Arguments are
 checked against the action's schema first; "30" sent for a number becomes 30.
+A text with "format": "date" must be a real day written YYYY-MM-DD, and a
+text with a "pattern" must match it.
 waiting_requests() lists what is stored and still waiting, for the dashboard.
 
 Only trusted server code may call confirm() and unlock(). No action exposes
@@ -70,7 +72,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import functools
 import hashlib
 import inspect
@@ -81,11 +83,11 @@ import re
 import sqlite3
 from threading import RLock
 import traceback
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 import unicodedata
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from backend.bank.db import connect
 
@@ -133,6 +135,10 @@ QUOTE_LIKE = frozenset(map(chr, (
 BLANKS_IN_A_ROW = 3
 # An argument name the model made up is repeated in a reply only if it looks like one.
 NAME_LIKE = re.compile(r"[A-Za-z0-9_]{1,40}")
+# The one way a "format": "date" text may be written. Python also reads
+# 20261017 and 2026-W42-6 as that day, but the books compare dates as text,
+# where those sort as some other day.
+DATE_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 OWNER_ONLY = "The assistant is not allowed to do this. Only the owner can, in the bank app."
 LOCKED = (f"This session is locked after {LOCK_AFTER_REFUSALS} refused requests. "
@@ -835,6 +841,10 @@ def _build_model(name, schema_text) -> type[BaseModel]:
         elif kind is str:
             # No text argument is unlimited, whether or not its schema says so.
             limits.setdefault("max_length", TEXT_LIMIT)
+            if "pattern" in spec:
+                limits["pattern"] = spec["pattern"]
+            if spec.get("format") == "date":
+                kind = Annotated[str, AfterValidator(_calendar_day)]
         if key in required:
             fields[key] = (kind, Field(..., **limits))
         else:
@@ -844,6 +854,18 @@ def _build_model(name, schema_text) -> type[BaseModel]:
     # As in JSON Schema: other arguments are allowed unless the schema rules them out.
     extra = "forbid" if schema.get("additionalProperties") is False else "allow"
     return create_model(f"{name}_arguments", __config__=ConfigDict(extra=extra), **fields)
+
+
+def _calendar_day(text) -> str:
+    """A "format": "date" argument as sent, once it is known to be a real day
+    written YYYY-MM-DD. The message is repeated to the model, so it says how."""
+    try:
+        if DATE_TEXT.fullmatch(text):
+            date.fromisoformat(text)
+            return text
+    except ValueError:
+        pass
+    raise ValueError("a date must be a real day written YYYY-MM-DD")
 
 
 def _check_arguments(action, arguments) -> dict:

@@ -752,6 +752,25 @@ class ArgumentCheckTests(PermissionTestCase):
         execute("count", {"days": None, "late": None}, "s1")
         self.assertEqual(self.calls, [("count", {})])
 
+    def test_a_date_is_a_real_day_written_one_way(self):
+        # Python reads the first two as 17 October too; the books compare dates as text.
+        self.add("on", "green", {"type": "object", "properties": {
+            "day": {"type": "string", "format": "date"}}, "additionalProperties": False})
+        for other in ("20261017", "2026-W42-6", "2026-02-30", "17.10.2026"):
+            reply = execute("on", {"day": other}, "s1")
+            self.assertEqual(reply["status"], "error", other)
+            self.assertIn("Invalid action arguments: day: ", reply["message"])
+            self.assertIn("YYYY-MM-DD", reply["message"])
+        self.assertEqual(execute("on", {"day": "2026-10-17"}, "s1")["status"], "ok")
+        self.assertEqual(self.calls, [("on", {"day": "2026-10-17"})])
+
+    def test_a_pattern_in_the_schema_is_checked(self):
+        self.add("plan", "green", {"type": "object", "properties": {
+            "plan_id": {"type": "string", "pattern": "^[a-f0-9]{4}$"}}, "additionalProperties": False})
+        self.assertEqual(execute("plan", {"plan_id": "AB12"}, "s1")["status"], "error")
+        self.assertEqual(execute("plan", {"plan_id": "ab12"}, "s1")["status"], "ok")
+        self.assertEqual(self.calls, [("plan", {"plan_id": "ab12"})])
+
     def test_other_arguments_are_allowed_only_when_the_schema_allows_them(self):
         self.assertEqual(execute("count", {"city": "Batumi"}, "s1")["status"], "error")
         self.add("open", "green", {"type": "object"})

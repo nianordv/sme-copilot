@@ -58,6 +58,41 @@ class LedgerTests(BooksTestCase):
         with self.assertRaises(registry.ActionError):
             ledger.reverse_entry(result['entry_id'], 'undo2', 'Again')
 
+    def test_a_date_written_another_way_is_refused_not_stored(self):
+        # Python reads 20261003 as 3 October, but these tables compare dates as
+        # text: stored like that, a receipt never counted and its reversal did.
+        others = ('20261003', '2026-W40-6', '2026-10-3', '2026-02-30', 20261003)
+        for other in others:
+            with self.assertRaisesRegex(registry.ActionError, 'YYYY-MM-DD'):
+                ledger.initialize(1000, other)
+        self.setup_cash()
+        for other in others:
+            with self.assertRaisesRegex(registry.ActionError, 'YYYY-MM-DD'):
+                ledger.record_cash(f'r-{other}', other, 'in', 40, 'invoice', invoice_id='I1')
+            with self.assertRaisesRegex(registry.ActionError, 'YYYY-MM-DD'):
+                ledger.record_loan(f'l-{other}', 500, 12, 0, other, '2026-11-03', 2, 'amortizing', False)
+            with self.assertRaisesRegex(registry.ActionError, 'YYYY-MM-DD'):
+                ledger.record_loan(f'm-{other}', 500, 12, 0, '2026-10-03', other, 2, 'amortizing', False)
+            with self.assertRaisesRegex(registry.ActionError, 'YYYY-MM-DD'):
+                ledger.advance_date(other)
+        self.assertEqual(self.cash(), 1000)
+        self.assertEqual(today().isoformat(), '2026-10-03')
+        with connect() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM cash_entries').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM recorded_loans').fetchone()[0], 0)
+
+    def test_bill_is_told_the_date_form_before_the_owner_is_asked(self):
+        self.setup_cash()
+        with patch.dict(registry._actions, {}, clear=True):
+            register_bookkeeping_actions()
+            reply = registry.execute('record_cash_transaction', {
+                'reference': 'r1', 'event_date': '20261003', 'direction': 'in',
+                'amount': 40, 'category': 'invoice', 'invoice_id': 'I1'}, 'owner')
+        self.assertEqual(reply['status'], 'error')
+        self.assertIn('event_date', reply['message'])
+        self.assertIn('YYYY-MM-DD', reply['message'])
+        self.assertEqual(registry.waiting_requests()['items'], [])
+
     def test_concurrent_duplicate_receipt_adds_once(self):
         self.setup_cash()
 

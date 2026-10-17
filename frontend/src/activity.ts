@@ -19,7 +19,7 @@ const actions: Record<string, string> = {
   record_existing_loan: 'Existing loan record',
   cancel_recorded_loan: 'Loan record correction',
   get_cash_records: 'Transactions and loans',
-  get_risk_flags: 'Customer risk review',
+  get_cash_risk: 'Customer risk review',
   get_payment_probabilities: 'Invoice payment estimates',
   transfer_money: 'Money transfer request',
   take_loan: 'Borrowing request',

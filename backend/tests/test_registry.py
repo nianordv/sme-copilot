@@ -1,11 +1,27 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import re
 import unittest
 from unittest.mock import patch
 
+from backend import main  # noqa: F401  (starting the app registers every action)
 from backend.actions import registry
 from backend.actions.demo import register_demo_actions
 from backend.tests.helpers import use_temporary_database
+
+ACTIVITY_LABELS = Path(__file__).resolve().parents[2] / "frontend" / "src" / "activity.ts"
+
+
+class ActivityLabelTests(unittest.TestCase):
+    def test_every_action_has_a_label_on_the_activity_page(self):
+        # The page names a log row by its action; a name it does not know
+        # shows as "Activity request", as get_cash_risk once did.
+        actions = ACTIVITY_LABELS.read_text().split("const decisions")[0]
+        labelled = set(re.findall(r"^\s+(\w+): '", actions, re.MULTILINE))
+        registered = {action["name"] for action in registry.list_actions()}
+        self.assertTrue(registered)
+        self.assertEqual(registered - labelled, set())
 
 
 class RegistryTests(unittest.TestCase):

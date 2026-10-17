@@ -29,9 +29,17 @@ ACTION_LABELS = {
 }
 
 
+TOO_LARGE = "Conversation is too large. Start a new chat."
+
+
+class ConversationTooLarge(ValueError):
+    """The chat no longer fits in one turn. Unlike a bad model reply, this is
+    not the model's fault, so the endpoints show the owner this message."""
+
+
 def check_context(messages):
     if len(json.dumps(messages, ensure_ascii=False)) > MAX_CONVERSATION_CHARS:
-        raise ValueError("Conversation is too large. Start a new chat.")
+        raise ConversationTooLarge(TOO_LARGE)
 
 
 def tool_catalog():

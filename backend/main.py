@@ -17,7 +17,7 @@ from backend.actions.planning import register_planning_actions
 from backend.actions.reminders import register_reminder_actions
 from backend.actions import registry
 from backend.dashboard import read_dashboard
-from backend.agent import stream_agent
+from backend.agent import ConversationTooLarge, stream_agent
 from backend import auth
 from backend.actions.bookkeeping import register_bookkeeping_actions
 from backend.insights import workspace, register_insight_actions
@@ -136,6 +136,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
             status_code=502,
             detail="Ollama rejected the request. Check the model setup.",
         ) from exc
+    except ConversationTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(
             status_code=502,
@@ -178,6 +180,14 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             yield json.dumps({
                 "type": "error",
                 "message": "Ollama rejected the request.",
+            }) + "\n"
+
+        except ConversationTooLarge as problem:
+            # Caught before ValueError: the owner should start a new chat,
+            # not wonder what is wrong with the model.
+            yield json.dumps({
+                "type": "error",
+                "message": str(problem),
             }) + "\n"
 
         except (ValueError, KeyError, TypeError, AttributeError):

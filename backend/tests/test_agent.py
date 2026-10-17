@@ -2,8 +2,12 @@ import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi.testclient import TestClient
+
 from backend import agent
 from backend.actions import registry
+from backend.main import app
+from backend.tests.helpers import sign_in_as_owner, use_temporary_database
 
 
 def tool_reply(name="get_receivables", arguments=None, count=1):
@@ -193,6 +197,32 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 _ = [event async for event in agent.stream_agent(
                     [{"role": "user", "content": "x" * 25000}], "owner")]
         request.assert_not_called()
+
+
+class LongChatTests(unittest.TestCase):
+    def setUp(self):
+        use_temporary_database(self)
+        self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.addCleanup(self.client.close)
+        sign_in_as_owner(self, self.client)
+
+    def long_chat(self):
+        # Nine questions with answers the size of a funding comparison.
+        history = []
+        for _ in range(9):
+            history += [{"role": "user", "content": "q" * 300},
+                        {"role": "assistant", "content": "a" * 3300}]
+        return {"session_id": "owner",
+                "messages": [*history, {"role": "user", "content": "One more question?"}]}
+
+    def test_a_chat_too_long_to_read_says_start_a_new_one(self):
+        with patch.object(agent, "request_action_turn", AsyncMock()) as model:
+            streamed = self.client.post("/chat/stream", json=self.long_chat())
+            whole = self.client.post("/chat", json=self.long_chat())
+        model.assert_not_called()
+        events = [json.loads(line) for line in streamed.text.splitlines()]
+        self.assertEqual(events, [{"type": "error", "message": agent.TOO_LARGE}])
+        self.assertEqual((whole.status_code, whole.json()["detail"]), (413, agent.TOO_LARGE))
 
 
 if __name__ == "__main__":

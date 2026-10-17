@@ -85,7 +85,8 @@ def _work() -> dict[str, Any]:
 
 
 def _log() -> dict[str, Any]:
-    rows = registry.audit_log()[-LOG_ROWS:]
+    # Only the rows shown are read. verify_log() still walks every row: it must.
+    rows = registry.newest_log_rows(LOG_ROWS)
     return {
         "check": registry.verify_log(),
         "rows": [{
@@ -94,5 +95,5 @@ def _log() -> dict[str, Any]:
             "result": row["result"],
             # The model wrote these. One line of text, as the log itself keeps them.
             "arguments": registry.shown(json.dumps(row["arguments"], ensure_ascii=False)),
-        } for row in reversed(rows)],
+        } for row in rows],
     }

@@ -266,6 +266,18 @@ class LogTests(DashboardTestCase):
         self.assertEqual([row["log_id"] for row in log["rows"]], list(range(34, 14, -1)))
         self.assertEqual(log["check"]["rows"], 34)
 
+    def test_only_the_rows_shown_are_read(self):
+        # The page refreshes often and the log only grows: reading all of it
+        # cost 62 ms per 10,000 rows to show 20.
+        for _ in range(25):
+            registry.execute("get_balance", {}, CHAT)
+        expected = list(reversed(registry.audit_log()))[:20]
+        with patch.object(registry, "audit_log", side_effect=AssertionError("read the whole log")):
+            log = read_dashboard()["log"]
+        self.assertEqual([row["log_id"] for row in log["rows"]], [row["log_id"] for row in expected])
+        self.assertEqual(registry.newest_log_rows(3), expected[:3])
+        self.assertEqual(registry.newest_log_rows(-1), [])
+
     def test_a_changed_row_is_reported(self):
         registry.execute("get_balance", {}, CHAT)
         registry.execute("transfer_money", {"amount": 5000}, CHAT)

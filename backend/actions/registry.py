@@ -13,7 +13,8 @@ confirm(confirmation_id, approved, session_id) return one of:
   {"status": "needs_confirmation", "confirmation_id": str, "summary": str}
   {"status": "refused", "reason": str}
   {"status": "error", "message": str}
-unlock(session_id) clears a lock; audit_log() and verify_log() only read.
+unlock(session_id) clears a lock; audit_log(), newest_log_rows() and verify_log()
+only read.
 owner_records() lets the sign-in code add its own rows to the log.
 
 Levels: Green runs. Yellow is stored in the database with its exact arguments
@@ -341,6 +342,18 @@ def audit_log(session_id=None) -> list[dict]:
         parameters = (_text(session_id),)
     with _records() as conn:
         rows = conn.execute(sql + " ORDER BY log_id", parameters).fetchall()
+    return [{**dict(row), "arguments": json.loads(row["arguments"])} for row in rows]
+
+
+def newest_log_rows(limit=20) -> list[dict]:
+    """The newest rows of the log, newest first, for a page that shows its
+    end. Only these rows are read, however long the log has grown; audit_log()
+    reads all of it. A limit below zero reads none: SQLite takes -1 for all."""
+    with _records() as conn:
+        rows = conn.execute(
+            "SELECT log_id, time, session_id, action, arguments, level, decision, result, "
+            "confirmation_id FROM audit_log ORDER BY log_id DESC LIMIT ?",
+            (max(0, int(limit)),)).fetchall()
     return [{**dict(row), "arguments": json.loads(row["arguments"])} for row in rows]
 
 

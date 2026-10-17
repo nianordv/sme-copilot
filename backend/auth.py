@@ -18,7 +18,10 @@ repeating what was sent, so a mistyped PIN is never sent back or logged.
 
 After 5 wrong PINs within 5 minutes every attempt is refused for 5 minutes,
 the right PIN included. The wrong PINs are counted from the audit log, as a
-chat's lock is, so a restart does not reset the count. A sign-in, a wrong PIN
+chat's lock is, so a restart does not reset the count. The limit is one for
+everybody and it never grows, so it only slows guessing down: the PIN must
+have at least 6 characters, and whoever can reach the server can keep the
+owner from signing in by typing wrong PINs. A sign-in, a wrong PIN
 and a sign-out each add a row to that log, in the same transaction as what
 they record. Attempts made while the limit holds add none: the log is never
 shortened, so nothing a stranger can repeat without end goes into it.
@@ -46,7 +49,10 @@ from backend.actions import registry
 from backend.bank.db import connect
 
 PIN_VARIABLE = "RIGHTSIZE_OWNER_PIN"
-PIN_MIN_LENGTH = 4
+# The limit below lets a program try about 1,400 PINs a day. Four digits would
+# last it a week at most, and six digits a year on average.
+PIN_MIN_LENGTH = 6
+PIN_MAX_LENGTH = 64
 COOKIE = "rightsize_owner"
 LOGIN_HOURS = 8
 WRONG_PINS = 5
@@ -79,14 +85,14 @@ router = APIRouter()
 class PinRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    pin: str = Field(min_length=1, max_length=64)
+    pin: str = Field(min_length=1, max_length=PIN_MAX_LENGTH)
 
 
 class UnlockRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    pin: str = Field(min_length=1, max_length=64)
+    pin: str = Field(min_length=1, max_length=PIN_MAX_LENGTH)
 
 
 # ----------------------------------------------------------------- the endpoints
@@ -241,10 +247,10 @@ def _owner_pin() -> str:
         raise HTTPException(status_code=503, detail=(
             f"Nobody can sign in: {PIN_VARIABLE} is not set on the server. "
             "Set it and start the server again."))
-    if len(pin) < PIN_MIN_LENGTH:
+    if not PIN_MIN_LENGTH <= len(pin) <= PIN_MAX_LENGTH:
         raise HTTPException(status_code=503, detail=(
-            f"Nobody can sign in: {PIN_VARIABLE} on the server is shorter than "
-            f"{PIN_MIN_LENGTH} characters. Set a longer one and start the server again."))
+            f"Nobody can sign in: {PIN_VARIABLE} on the server must have {PIN_MIN_LENGTH} to "
+            f"{PIN_MAX_LENGTH} characters. Set another one and start the server again."))
     return pin
 
 

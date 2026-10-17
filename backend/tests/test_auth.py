@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import os
+import random
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -182,14 +183,14 @@ class SignInTests(AuthTestCase):
 
     def test_without_a_pin_on_the_server_nobody_can_sign_in(self):
         for value, said in ((None, "is not set on the server"), ("", "is not set on the server"),
-                            ("123", "is shorter than 4 characters")):
+                            ("12345", "must have 6 to 64 characters"), ("9" * 65, "must have 6 to 64 characters")):
             setting = {} if value is None else {auth.PIN_VARIABLE: value}
             with patch.dict(os.environ, setting):
                 if value is None:
                     del os.environ[auth.PIN_VARIABLE]
-                for pin in ("123", "", OWNER_PIN, "None"):
+                for pin in ("12345", "", OWNER_PIN, "None", value):
                     response = self.client.post("/login", json={"pin": pin})
-                    if pin:
+                    if pin and len(pin) <= auth.PIN_MAX_LENGTH:
                         self.assertEqual(response.status_code, 503, (value, pin))
                         self.assertIn(f"Nobody can sign in: {auth.PIN_VARIABLE}", response.json()["detail"])
                         self.assertIn(said, response.json()["detail"])
@@ -327,6 +328,43 @@ class WrongPinLimitTests(AuthTestCase):
         self.assertEqual(len(self.owner_rows()), 5)
         self.assertEqual(self.login().status_code, 429)
         self.assertTrue(registry.verify_log()["intact"])
+
+    def test_no_way_of_spacing_attempts_gets_more_than_five_tries_in_five_minutes(self):
+        """Two thousand attempts at sign-in and at unlock, in bursts, at a steady
+        pace and just either side of the five minutes, with the right PIN now
+        and then. Whatever the timing, a PIN is looked at five times in any
+        five minutes at most, and the right PIN opens nothing while the block holds."""
+        self.login()
+        chance = random.Random(2026)
+        looked_at = []  # When a PIN was compared with the owner's, right or wrong.
+        for _ in range(2000):
+            self.later(seconds=chance.choice((0, 0, 0, 1, 3, 59, 60, 61, 74, 75, 76, 299, 300, 301)))
+            action, wrong_status = chance.choice((("sign_in", 401), ("unlock", 403)))
+            right = chance.random() < 0.05
+            blocked = auth._seconds_blocked(self.wrong_pin_times(), self.clock) > 0
+            try:
+                auth._check_pin(OWNER_PIN if right else WRONG, action, {}, wrong_status=wrong_status)
+                answer = 200
+            except HTTPException as refused:
+                answer = refused.status_code if refused.detail != auth.NOW_BLOCKED else "fifth"
+            if blocked:
+                self.assertEqual(answer, 429, "an attempt got through while the block held")
+                continue
+            self.assertEqual(answer, 200 if right else answer)
+            self.assertIn(answer, (200,) if right else (wrong_status, "fifth"))
+            if not right:
+                looked_at.append(self.clock)
+        self.assertGreater(len(looked_at), 300)
+        for index, moment in enumerate(looked_at):
+            recent = [earlier for earlier in looked_at[:index + 1] if moment - earlier < timedelta(minutes=5)]
+            self.assertLessEqual(len(recent), 5, f"six wrong PINs were looked at within five minutes of {moment}")
+        # Every one of them is in the log, and nothing else is.
+        self.assertEqual(len(looked_at), sum(decision == "refused" for _, decision, _ in self.owner_rows()))
+        self.assertTrue(registry.verify_log()["intact"])
+
+    def wrong_pin_times(self):
+        with registry.owner_records() as (conn, _):
+            return auth._wrong_pin_times(conn, auth.WRONG_PINS)
 
     def test_after_the_block_it_takes_five_new_wrong_pins_to_start_another(self):
         self.wrong(5)

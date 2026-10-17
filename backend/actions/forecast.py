@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.actions.lookups import find_customer, no_single_customer
 from backend.actions.registry import Action, ActionError, register
@@ -26,13 +26,27 @@ class AssumePaid(BaseModel):
     invoices: list[str] = Field(default_factory=list, max_length=100)
 
 
+# Problems with what the model sent are ActionErrors in our own words, so it
+# can correct the call; anything else stays the registry's generic failure.
+EXTRA_OUTFLOW = ('Each extra outflow needs only a date written YYYY-MM-DD, an amount '
+                 'of 0 or more in GEL, and a short label.')
+ASSUME_PAID = ('assume_paid takes only "customers", up to 20 names or IDs, and '
+               '"invoices", up to 100 invoice IDs.')
+
+
 def forecast_cash(days=30, extra_outflows=None, assume_paid=None, _funding_plan=None):
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 60:
-        raise ValueError('Days must be an integer between 1 and 60.')
+        raise ActionError('Days must be a whole number from 1 to 60.')
     if extra_outflows is not None and (not isinstance(extra_outflows, list) or len(extra_outflows) > 20):
-        raise ValueError('At most 20 extra outflows are allowed.')
-    extras = [ExtraOutflow.model_validate(item) for item in (extra_outflows or [])]
-    assumed = AssumePaid.model_validate(assume_paid or {})
+        raise ActionError('Give at most 20 extra outflows, as a list.')
+    try:
+        extras = [ExtraOutflow.model_validate(item) for item in (extra_outflows or [])]
+    except ValidationError:
+        raise ActionError(EXTRA_OUTFLOW) from None
+    try:
+        assumed = AssumePaid.model_validate(assume_paid or {})
+    except ValidationError:
+        raise ActionError(ASSUME_PAID) from None
     with connect() as conn:
         # One read transaction keeps the books consistent during this forecast.
         conn.execute('BEGIN')
@@ -63,7 +77,8 @@ def forecast_cash(days=30, extra_outflows=None, assume_paid=None, _funding_plan=
             customer_ids.add(customer['customer_id'])
         invoice_ids = set(assumed.invoices)
         if not invoice_ids.issubset({item['invoice_id'] for item in invoices}):
-            raise ValueError('Assumed-paid invoices must be outstanding invoices in these books.')
+            raise ActionError('An assumed-paid invoice is not unpaid in these books. '
+                              'Use get_receivables or get_customer to find invoice IDs.')
         paid_indices = [index for index, item in enumerate(invoices)
                         if item['invoice_id'] in invoice_ids or item['customer_id'] in customer_ids]
         future, sales_assumption = future_sales(conn, snapshot, days)

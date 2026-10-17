@@ -160,6 +160,20 @@ class CashForecastTests(CurveBooks):
             self.assertEqual(registry.execute('forecast_cash', {'extra_outflows': [{'amount': -1}]}, 'forecast-test')['status'], 'error')
         self.assertTrue(registry.audit_log('forecast-test'))
 
+    def test_bad_nested_input_tells_bill_what_to_send(self):
+        # Not the registry's generic failure: Bill must be able to correct the call.
+        with patch.dict(registry._actions, {}, clear=True):
+            register_forecast_action()
+            for arguments, clue in (
+                    ({'extra_outflows': [{'amount': 5}]}, 'YYYY-MM-DD'),
+                    ({'extra_outflows': [{'date': '20261020', 'amount': 5, 'label': 'Stock'}]}, 'YYYY-MM-DD'),
+                    ({'assume_paid': {'unexpected': True}}, '"customers"'),
+                    ({'assume_paid': {'invoices': ['missing']}}, 'get_receivables')):
+                reply = registry.execute('forecast_cash', {'days': 30, **arguments}, 'nested-check')
+                self.assertEqual(reply['status'], 'error', arguments)
+                self.assertIn(clue, reply['message'])
+                self.assertNotEqual(reply['message'], registry.FAILED)
+
     def test_ambiguous_customer_is_not_assumed_paid(self):
         self.query("UPDATE customers SET name='Cafe One' WHERE customer_id='C1'")
         self.query("UPDATE customers SET name='Cafe Two' WHERE customer_id='C2'")

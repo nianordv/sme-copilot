@@ -2,6 +2,7 @@
 """
 
 import hashlib
+import argparse
 import json
 import platform
 import time
@@ -16,12 +17,52 @@ ROOT = Path(__file__).resolve().parent
 PREPARED = ROOT / "artifacts" / "prepared"
 CONFIG_PATH = ROOT / "model_config.json"
 OUTPUT = ROOT / "artifacts" / "lightgbm" / "first_run"
+SELECTED_OUTPUT = OUTPUT.parent / 'leaves_16_min_100'
 
 EARLY_STOPPING_ROUNDS = 30
 
 
 def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_existing_run(run, expected, manifest, prepared=None):
+    """Reuse only a model with matching settings, data and file fingerprints."""
+    run = Path(run)
+    prepared = PREPARED if prepared is None else Path(prepared)
+    metadata = json.loads((run / 'metadata.json').read_text())
+    if metadata['parameters'] != expected:
+        raise ValueError(f'{run.name}: saved parameters differ from this configuration.')
+    if metadata['source_sha256'] != manifest['source_sha256']:
+        raise ValueError(f'{run.name}: saved model uses a different dataset.')
+    if metadata['prepared_manifest_sha256'] != file_hash(prepared / 'manifest.json'):
+        raise ValueError(f'{run.name}: preparation changed after training.')
+    for partition, key in [('train', 'training_arrays_sha256'),
+                           ('validation_tuning', 'tuning_arrays_sha256')]:
+        if metadata[key] != file_hash(prepared / f'{partition}.npz'):
+            raise ValueError(f'{run.name}: {partition} arrays changed.')
+    if metadata['model_sha256'] != file_hash(run / 'model.txt'):
+        raise ValueError(f'{run.name}: saved model changed.')
+    if metadata['feature_names'] != manifest['feature_names']:
+        raise ValueError(f'{run.name}: feature definitions changed.')
+    return metadata
+
+
+def train_selected():
+    config = json.loads(CONFIG_PATH.read_text())
+    config.pop('model', None)
+    overrides = {'num_leaves': 16, 'min_child_samples': 100}
+    expected = {**config, **overrides}
+    if expected['n_estimators'] != 500:
+        raise ValueError('The selected submission configuration requires a 500-tree limit.')
+    manifest = json.loads((PREPARED / 'manifest.json').read_text())
+    if SELECTED_OUTPUT.exists() and any(SELECTED_OUTPUT.iterdir()):
+        if not all((SELECTED_OUTPUT / name).is_file() for name in ('model.txt', 'metadata.json')):
+            raise FileExistsError(f'{SELECTED_OUTPUT} contains an incomplete run. Inspect it before continuing; no files were overwritten.')
+        metadata = validate_existing_run(SELECTED_OUTPUT, expected, manifest)
+        print(f'Reusing validated selected model: {SELECTED_OUTPUT / "model.txt"}')
+        return metadata
+    return train(output=SELECTED_OUTPUT, overrides=overrides)
 
 
 def load_partition(name, manifest):
@@ -225,7 +266,12 @@ def train(output=OUTPUT, overrides=None):
         "Next: evaluate invoice-level payment horizons "
         "against the baseline."
     )
+    return metadata
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--selected', action='store_true',
+                        help='Train only the selected submission configuration, or validate and reuse it.')
+    args = parser.parse_args()
+    train_selected() if args.selected else train()

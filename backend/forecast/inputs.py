@@ -104,7 +104,7 @@ def _score_date(as_of, source_hash, model_hash, manifest_hash):
         input=json.dumps({'as_of':as_of, 'source_sha256':source_hash}), text=True,
         capture_output=True, timeout=180, check=False)
     if result.returncode:
-        raise ValueError('Cannot refresh payment curves. Install ml/requirements.txt and LightGBM 4.7.0 in the ML environment, and prepare the saved model/baseline.')
+        raise ValueError('Cannot refresh payment curves. Install ml/requirements.txt and LightGBM 4.7.0 in the ML environment, and prepare the saved model/baseline. On a Mac, also run brew install libomp.')
     data = json.loads(result.stdout)
     curves = np.asarray(data['curves'],dtype=float).reshape(len(data['invoice_ids']),60)
     if data['as_of'] != as_of or not np.isfinite(curves).all() or (curves<0).any() or (curves>1).any() or (np.diff(curves,axis=1)<0).any():

@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from .evaluate_model import evaluate
-from .train import file_hash, train
+from .train import file_hash, train, validate_existing_run
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,35 +21,6 @@ CONFIG_PATH = ROOT / "model_config.json"
 LEAF_OPTIONS = [8, 16]
 MIN_SAMPLE_OPTIONS = [100, 200, 400]
 MIN_RELATIVE_IMPROVEMENT = 0.02
-
-
-def validate_existing_run(run, expected, manifest):
-    metadata = json.loads((run / "metadata.json").read_text())
-
-    if metadata["parameters"] != expected:
-        raise ValueError(
-            f"{run.name}: saved parameters differ from this experiment."
-        )
-
-    if metadata["source_sha256"] != manifest["source_sha256"]:
-        raise ValueError(f"{run.name}: saved model uses a different dataset.")
-
-    if metadata["prepared_manifest_sha256"] != file_hash(
-        PREPARED / "manifest.json"
-    ):
-        raise ValueError(f"{run.name}: preparation changed after training.")
-
-    for partition, key in [
-        ("train", "training_arrays_sha256"),
-        ("validation_tuning", "tuning_arrays_sha256"),
-    ]:
-        if metadata[key] != file_hash(PREPARED / f"{partition}.npz"):
-            raise ValueError(f"{run.name}: {partition} arrays changed.")
-
-    if metadata["model_sha256"] != file_hash(run / "model.txt"):
-        raise ValueError(f"{run.name}: saved model changed.")
-
-    return metadata
 
 
 def tune():

@@ -84,8 +84,23 @@ Do not use those test results for further model selection.
 The scripts are `baseline`, `train`, `tune`, `check_iterations`,
 `evaluate_calibration`, `check_calibration_adjustment`, `evaluate_receipts`,
 `evaluate_test` and `check_robustness`, all run as `python -m ml.<name>`.
-The train/tune commands write artifacts: they are for rebuilding an experiment,
-not starting the app. Preserve the selected model and its metadata for the demo.
+`python -m ml.train --selected` is part of app setup, after `ml.baseline` and
+before `ml.score_open_invoices`. It validates and reuses the included selected
+model, or trains only that configuration if its folder is absent or empty.
+Incomplete runs and mismatched fingerprints stop without overwriting files.
+Plain `python -m ml.train` still trains the original configuration into `first_run`.
+`ml.tune` and the check scripts rebuild the experiment, rather than app setup.
+Preserve the evaluated selected model and its metadata for the demo. On macOS,
+install the LightGBM runtime with `brew install libomp` first.
+
+Reproduction was checked on 19 October 2026 in a separate clean checkout using
+our pinned ML environment. Generating the data and preparing it validated the
+included model. Training again without that temporary model copy took about
+80 seconds and matched the evaluated model's source, manifest, training-array,
+tuning-array and model SHA-256 fingerprints exactly. Scoring reported
+`model_used: leaves_16_min_100` and `fallback: false`. This verifies the rebuild
+on our machine; byte-identical results across other operating systems are not
+assumed. The evaluated model remains included in the repository.
 Exact evaluation results are in the saved JSON reports; lower Brier and receipt
 error are better, and improvement is relative to the same baseline and cohort.
 

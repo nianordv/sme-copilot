@@ -191,7 +191,7 @@ All of this arithmetic is Python code (`backend/bank/products.py`, `backend/acti
 
 AI coding assistants, such as Claude Code, helped write much of the code, tests and documents. The team chose what to build and is responsible for all of it.
 
-`backend/requirements.txt` pins the whole installation, including packages that come bundled with FastAPI and that the app never uses (for example Sentry and OpenTelemetry). One check script, `ml/check_calibration_adjustment.py`, also needs scikit-learn, which is not pinned.
+`backend/requirements.txt` pins the whole installation, including packages that come bundled with FastAPI and that the app never uses (for example Sentry and OpenTelemetry). `ml/requirements.txt` pins the forecast's packages, including scikit-learn, which training the model and the calibration check need.
 
 ### Settings
 
@@ -214,6 +214,12 @@ Settings are environment variables, set when the server starts. Never commit a r
 
 Install Python 3.12, Node.js 22.12 or newer, and [Ollama](https://ollama.com). Then download the AI model once. It is about 5 GB.
 
+On macOS, LightGBM also needs the OpenMP runtime. Install it with [Homebrew](https://brew.sh) before running the ML commands:
+
+```sh
+brew install libomp
+```
+
 ```sh
 ollama pull qwen2.5:7b
 ```
@@ -227,13 +233,16 @@ python -m pip install -r ml/requirements.txt
 python -m ml.generate_invoices_ge
 python -m ml.prepare_data
 python -m ml.baseline
+python -m ml.train --selected
 python -m ml.score_open_invoices
 deactivate
 ```
 
-This writes the 50,319 generated invoices to `ml/data/` and the forecast files to `ml/artifacts/`. Git ignores both folders, so everyone generates them on their own computer. The same seed gives the same file every time.
+This writes the 50,319 generated invoices to `ml/data/` and the forecast files to `ml/artifacts/`. Generated data and forecasts are ignored by Git; the evaluated model's `model.txt` and `metadata.json` are included. The same seed and pinned dependency versions reproduce the data.
 
-`ml.score_open_invoices` uses the trained model in `ml/artifacts/lightgbm/leaves_16_min_100`. If that folder is missing, it uses the simple average-based forecast instead and records which one it used. To get the trained model, either copy the team's saved folder into `ml/artifacts/lightgbm/`, or rebuild it with `python -m ml.tune` before the scoring step. Rebuilding trains six versions and takes a while.
+`ml.train --selected` prepares only the selected configuration: 16 leaves, at least 100 rows per leaf and a 500-tree limit, saved in `ml/artifacts/lightgbm/leaves_16_min_100`. If the included model and metadata match the prepared data, settings and fingerprints, it validates and reuses them without training. If the folder is absent or empty, it trains that configuration; the original fit took about 77 seconds on our Apple M2, with total setup taking longer. Other machines may take longer. Incomplete or mismatched runs stop with an explanation and are not overwritten.
+
+`ml.score_open_invoices` then scores that model. Confirm that it prints `Predictor: leaves_16_min_100`; the forecast metadata must have `"fallback": false`. Missing model files explicitly trigger the empirical baseline fallback, which is not the selected-model submission path. `ml.tune` rebuilds all six experimental configurations and is not required for setup. Training does not read or retune against the test results.
 
 ### Step 3: build the company's books (first time only)
 

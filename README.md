@@ -191,7 +191,7 @@ All of this arithmetic is Python code (`backend/bank/products.py`, `backend/acti
 
 AI coding assistants, such as Claude Code, helped write much of the code, tests and documents. The team chose what to build and is responsible for all of it.
 
-`backend/requirements.txt` pins the whole installation, including packages that come bundled with FastAPI and that the app never uses (for example Sentry and OpenTelemetry). One check script, `ml/check_calibration_adjustment.py`, also needs scikit-learn, which is not pinned.
+`backend/requirements.txt` pins the whole installation, including packages that come bundled with FastAPI and that the app never uses (for example Sentry and OpenTelemetry). `ml/requirements.txt` pins the forecast's packages, including scikit-learn, which training the model and the calibration check need.
 
 ### Settings
 
